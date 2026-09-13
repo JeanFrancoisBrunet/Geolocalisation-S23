@@ -1,0 +1,15 @@
+[Unit]
+Description=Serveur de reception des positions GPS (GeolocS23)
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jfbrunet
+WorkingDirectory=/home/jfbrunet/Projects/GeolocS23
+ExecStart=/usr/bin/python3 /home/jfbrunet/Projects/GeolocS23/serveur_geoloc.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
