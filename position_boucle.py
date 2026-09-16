@@ -12,7 +12,7 @@ from datetime import datetime
 import requests
 
 URL_SERVEUR = "http://10.221.90.1:5000/position"  # IP WireGuard du Pi5
-INTERVALLE_SECONDES = 3600  # toutes les heures
+INTERVALLE_SECONDES = 28800  # toutes les x secondes
 
 
 def envoyer_position():
