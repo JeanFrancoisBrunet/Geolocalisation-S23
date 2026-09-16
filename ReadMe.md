@@ -1,6 +1,6 @@
 # GeolocS23 — Géolocalisation & télémétrie Samsung S23 → Raspberry Pi 5
 
-Suivi de position **et de télémétrie** (vitesse, batterie, accéléromètre,luminosité, Wi-Fi, réseau mobile) 
+**Suivi de position et de Télémétrie** (vitesse, batterie, accéléromètre,luminosité, Wi-Fi, réseau mobile) 
 d'un Samsung S23 depuis un Raspberry Pi 5, via un tunnel WireGuard chiffré. 
 Le téléphone envoie périodiquement ses données à un petit serveur Flask hébergé sur le Pi5, qui les enregistre
 et permet de les visualiser (carte interactive + tableau de bord technique).
