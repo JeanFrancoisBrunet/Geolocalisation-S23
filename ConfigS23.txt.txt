@@ -14,11 +14,14 @@ termux-job-scheduler --job-id 1001 --script ~/envoyer_position.py --period-ms 28
 # Liste tous les jobs actuellement enregistrés et en attente d'exécution sur le système.
 termux-job-scheduler --pending
 
+# Lancer manuellement un envoi de données à partir du S23
+python3 ~/envoyer_position.py
+
 # Lire le fichier geoloc.log
-$ cat ~/geoloc.log     
+cat ~/geoloc.log     
 
 # Lire le fichier telemetrie.log
-$ cat ~/telemetrie.log  
+cat ~/telemetrie.log  
 
 # Purge les fichiers geoloc.log et telemetrie.log (à faire de temps en temps)
 > ~/geoloc.log

@@ -203,6 +203,14 @@ un cycle de nuit écran éteint, pour confirmer qu'aucun capteur ne timeout.
 ```bash
 termux-job-scheduler --pending          # lister les jobs en attente
 kill <PID>                              # arrêter un envoyer_position.py resté actif (rare, one-shot)
+python3 ~/envoyer_position.py           # déclencher un envoi manuel immédiat, sans attendre le prochain cycle
+```
+
+Purge périodique des logs sur le S23 (à faire de temps en temps, pas de
+rotation automatique) :
+```bash
+> ~/geoloc.log
+> ~/telemetrie.log
 ```
 
 ## Télémétrie collectée
@@ -211,14 +219,14 @@ En plus de la position GPS, chaque envoi tente de récupérer (chaque source
 est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la
 position) :
 
-| Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                         |
-|---            |---                                                   |---                                                                                                                                                               |
-| Vitesse       | champ `speed` du JSON `termux-location`              | en km/h, fiabilité variable selon le provider GPS/réseau                                                                                                         |
-| Batterie      | `termux-battery-status`                              | pourcentage, statut de charge, température                                                                                                                       |
-| Accéléromètre | `termux-sensor -s accelerometer -n 1`                | **instantané simple** (une mesure au moment de l'envoi), pas un flux continu — reste compatible avec le fonctionnement one-shot du job-scheduler                 |
-| Luminosité    | `termux-sensor -s "STK33911 Light  Non-wakeup" -n 1` | nom de capteur **spécifique au modèle de téléphone** (plusieurs capteurs "Light" existent sur le S23) — à vérifier avec `termux-sensor -l` sur un autre appareil |
-| Wi-Fi         | `termux-wifi-connectioninfo`                         | SSID + RSSI, vide si pas de Wi-Fi connecté (téléphone en 4G/5G)                                                                                                  |
-| Réseau mobile | `termux-telephony-deviceinfo`                        | opérateur (`network_operator_name`) et type de réseau (`network_type`, ex. `"lte"`)                                                                              |
+| Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                                                                                                          |
+|---            |---                                                   |---                                                                                                                                                                                                                                                |
+| Vitesse       | champ `speed` du JSON `termux-location`              | en km/h, fiabilité variable selon le provider GPS/réseau                                                                                                                                                                                          |
+| Batterie      | `termux-battery-status`                              | pourcentage, statut de charge, température                                                                                                                                                                                                        |
+| Accéléromètre | `termux-sensor -s accelerometer -n 1`                | **instantané simple** (une mesure au moment de l'envoi), pas un flux continu — reste compatible avec le fonctionnement one-shot du job-scheduler. Sert aussi à calculer l'indicateur Stable/En mouvement (voir onglet Télémétrie)                 |
+| Luminosité    | `termux-sensor -s "STK33911 Light  Non-wakeup" -n 1` | nom de capteur **spécifique au modèle de téléphone** (plusieurs capteurs "Light" existent sur le S23) — à vérifier avec `termux-sensor -l` sur un autre appareil                                                                                  |
+| Wi-Fi         | `termux-wifi-connectioninfo`                         | SSID + RSSI, vide si pas de Wi-Fi connecté (téléphone en 4G/5G)                                                                                                                                                                                   |
+| Réseau mobile | `termux-telephony-deviceinfo`                        | opérateur (`network_operator_name`) et type de réseau (`network_type`, ex. `"lte"`)                                                                                                                                                               |
 
 ## Tracker_S23.py (remplace l'ancien `visualiseur_geoloc.py`)
 
@@ -251,7 +259,15 @@ python3 Tracker_S23.py
 ### Onglet Télémétrie
 
 - Bandeau résumé affichant la dernière mesure connue : vitesse, batterie,
-  accélération (x, y, z), luminosité, Wi-Fi, réseau mobile.
+  accélération (x, y, z), **indicateur Stable / En mouvement**, luminosité,
+  Wi-Fi, réseau mobile.
+- L'indicateur de mouvement est calculé à partir de la norme du vecteur
+  accélération (`√(x²+y²+z²)`) : proche de 9,8 m/s² (gravité seule) →
+  **Stable** (badge vert) ; écart de plus de 1,5 m/s² → **En mouvement**
+  (badge rouge). Comme la mesure est un instantané unique par cycle, c'est
+  un indicateur ponctuel (l'état du téléphone à l'instant précis de
+  l'envoi), pas un suivi d'activité continu. Le même indicateur apparaît
+  aussi en colonne dans le tableau d'historique.
 - Tableau d'historique, avec le même système de filtre que l'onglet Carte :
   période prédéfinie (24h / 7j / 30j) ou **Personnalisée** avec sélection
   Du/Au parmi les horodatages enregistrés, validée par le bouton

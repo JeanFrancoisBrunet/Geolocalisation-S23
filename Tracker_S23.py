@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
-# =============================================================================
-#  Tracker S23 - Suivi de position ET de télémétrie du Samsung S23
+# ======================================================================================================================
+#  Tracker S23 - Suivi de Position & de Télémétrie du Samsung S23 sous Wireguard
 #  Onglet "Carte" : positions envoyées par le S23 (positions.log)
-#  Onglet "Télémétrie" : vitesse, batterie, accéléromètre, wifi, réseau,
-#  luminosité (telemetrie.log) — remplace visualiseur_geoloc.py
+#  Onglet "Télémétrie" : vitesse, batterie, accéléromètre, wifi, réseau, luminosité (telemetrie.log)
 #
 #  Raspberry Pi 5 (16 Go RAM, SSD NVMe 256 Go / 1 To, OS Bookworm)
 #
-#  Réglage de la fréquence de collecte : voir termux-job-scheduler côté S23
-#  (ConfigS23.txt), ou le bouton "Réglages Freq. Datas (S23)" ci-dessous.
+#  Réglage de la fréquence de collecte : voir le bouton "Réglages Freq. Datas (S23)" 
+#  et la commande termux-job-scheduler sur le S23 (ci-dessous 3 envois / jour)
+#  termux-job-scheduler --job-id 1001 --script ~/envoyer_position.py --period-ms 28800000 --network any --persisted true
+#
+# Lancer manuellement un envoi de données à partir du S23
+# python3 ~/envoyer_position.py
+#
+# Lire les fichiers geoloc.log et telemetrie.log
+# cat ~/geoloc.log
+# cat ~/telemetrie.log  
+#
+# Purge les fichiers geoloc.log et telemetrie.log (à faire de temps en temps)
+# > ~/geoloc.log
+# > ~/telemetrie.log
 #
 #  Auteur : Jean-François BRUNET – JFBConseils – Septembre 2026
-# =============================================================================
+# ======================================================================================================================
 
 import os
 import tkinter as tk
@@ -44,11 +55,9 @@ COLONNES_TELEMETRIE = [
     "operateur", "type_reseau",
 ]
 
-
 def parser_horodatage(horodatage):
     """Convertit une chaîne 'YYYY-MM-DD HH:MM:SS' du log en objet datetime."""
     return datetime.strptime(horodatage, "%Y-%m-%d %H:%M:%S")
-
 
 def filtrer_par_periode(entrees, debut, fin):
     """Filtre une liste d'entrées dont le premier élément est l'horodatage (str).
@@ -63,7 +72,6 @@ def filtrer_par_periode(entrees, debut, fin):
         resultat.append(entree + (dt,))
     return resultat
 
-
 def choisir_regroupement_auto(entrees_avec_dt):
     """Détermine automatiquement une granularité d'affichage selon l'étendue des dates."""
     if len(entrees_avec_dt) < 2:
@@ -75,7 +83,6 @@ def choisir_regroupement_auto(entrees_avec_dt):
         return "heure"
     else:
         return "jour"
-
 
 def regrouper_entrees(entrees_avec_dt, mode):
     """Réduit le nombre d'entrées affichées en gardant la dernière de chaque période."""
@@ -90,9 +97,7 @@ def regrouper_entrees(entrees_avec_dt, mode):
 
     return [par_cle[cle] for cle in sorted(par_cle.keys())]
 
-
 SEUIL_DEDUPLICATION_METRES = 30  # positions plus proches que ça = considérées comme "sur place"
-
 
 def distance_metres(lat1, lon1, lat2, lon2):
     """Distance approximative en mètres entre deux points GPS (formule de Haversine)."""
@@ -104,6 +109,20 @@ def distance_metres(lat1, lon1, lat2, lon2):
     a = sin(delta_phi / 2) ** 2 + cos(phi1) * cos(phi2) * sin(delta_lambda / 2) ** 2
     return 2 * rayon_terre * atan2(sqrt(a), sqrt(1 - a))
 
+GRAVITE_MS2 = 9.8          # accélération terrestre au repos, quelle que soit l'orientation du téléphone
+SEUIL_MOUVEMENT_MS2 = 1.5  # écart toléré par rapport à la gravité avant de considérer "en mouvement"
+
+def calculer_norme_acceleration(x, y, z):
+    """Magnitude du vecteur accélération. Proche de GRAVITE_MS2 au repos ;
+    un écart plus important signale un mouvement/choc au moment précis de la mesure."""
+    from math import sqrt
+    return sqrt(x ** 2 + y ** 2 + z ** 2)
+
+def evaluer_mouvement(norme):
+    """Renvoie 'Stable' ou 'En mouvement' selon l'écart à la gravité au repos."""
+    if abs(norme - GRAVITE_MS2) > SEUIL_MOUVEMENT_MS2:
+        return "En mouvement"
+    return "Stable"
 
 def dedupliquer_positions_stationnaires(positions_avec_dt, seuil_metres=SEUIL_DEDUPLICATION_METRES):
     """Quand plusieurs positions consécutives sont proches (téléphone immobile), ne garde
@@ -117,9 +136,8 @@ def dedupliquer_positions_stationnaires(positions_avec_dt, seuil_metres=SEUIL_DE
         _, lat_actuelle, lon_actuelle, _ = positions_avec_dt[i]
         if distance_metres(lat_ref, lon_ref, lat_actuelle, lon_actuelle) > seuil_metres:
             resultat.append(positions_avec_dt[i - 1])  # fin du groupe stationnaire précédent
-    resultat.append(positions_avec_dt[-1])  # dernière position (fin du dernier groupe)
+    resultat.append(positions_avec_dt[-1])             # dernière position (fin du dernier groupe)
     return resultat
-
 
 def lire_positions():
     """Lit positions.log et renvoie une liste de tuples (horodatage, lat, lon)."""
@@ -138,12 +156,10 @@ def lire_positions():
                 continue
     return positions
 
-
 def effacer_positions():
     """Vide positions.log (le fichier est conservé, mais vidé)."""
     with open(FICHIER_POSITIONS, "w"):
         pass
-
 
 def lire_telemetrie():
     """Lit telemetrie.log et renvoie une liste de tuples
@@ -163,12 +179,10 @@ def lire_telemetrie():
             entrees.append(tuple(champs))
     return entrees
 
-
 def effacer_telemetrie():
     """Vide telemetrie.log (le fichier est conservé, mais vidé)."""
     with open(FICHIER_TELEMETRIE, "w"):
         pass
-
 
 def formater_champ(valeur, suffixe=""):
     """Affiche '—' pour un champ vide plutôt qu'une chaîne vide illisible."""
@@ -176,11 +190,10 @@ def formater_champ(valeur, suffixe=""):
         return "—"
     return f"{valeur}{suffixe}"
 
-
 class FenetreReglagesCollecte(tk.Toplevel):
     """Calculateur d'intervalle de collecte, à reporter dans termux-job-scheduler
-    sur le S23 (voir ConfigS23.txt). Cette fenêtre ne modifie rien sur le
-    téléphone : elle aide juste à choisir et copier la bonne valeur en ms."""
+    sur le S23 (voir ConfigS23.txt). Cette fenêtre ne modifie rien sur le téléphone : 
+    elle aide juste à choisir et copier la bonne valeur en ms."""
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -320,7 +333,6 @@ class FenetreReglagesCollecte(tk.Toplevel):
         self.bouton_copier.config(text="Copié !")
         self.after(1500, lambda: self.bouton_copier.config(text="Copier"))
 
-
 class SplashScreen(tk.Toplevel):
     def __init__(self, parent, duree_ms, callback_fin):
         super().__init__(parent)
@@ -347,7 +359,6 @@ class SplashScreen(tk.Toplevel):
         tk.Label(self, text="Chargement...", font=("Helvetica", 10), bg="white").pack()
 
         self.after(duree_ms, lambda: (self.destroy(), callback_fin()))
-
 
 class TrackerS23(tk.Tk):
     def __init__(self):
@@ -394,7 +405,7 @@ class TrackerS23(tk.Tk):
         FenetreReglagesCollecte(self)
 
     # ------------------------------------------------------------------ #
-    #  Onglet Carte (reprend le comportement de l'ancien visualiseur)
+    #  Onglet Carte
     # ------------------------------------------------------------------ #
     def construire_onglet_carte(self, parent):
         ligne_actions = ttk.Frame(parent, padding=(8, 8, 8, 4))
@@ -576,15 +587,16 @@ class TrackerS23(tk.Tk):
     def demander_effacement_positions(self):
         confirme = messagebox.askyesno(
             "Effacer les positions",
-            "Voulez-vous vraiment effacer tout l'historique des positions ?\n"
-            "Le fichier positions.log sera vidé définitivement.",
+            "Voulez-vous vraiment effacer l'historique ?\n"
+            "(RaZ du fichier positions.log)\n"
+            "l'onglet Télémétrie n'est pas concerné.",
         )
         if confirme:
             effacer_positions()
             self.rafraichir_carte()
 
     # ------------------------------------------------------------------ #
-    #  Onglet Télémétrie (nouveau)
+    #  Onglet Télémétrie
     # ------------------------------------------------------------------ #
     def construire_onglet_telemetrie(self, parent):
         # --- Bandeau "dernière valeur connue" ---
@@ -597,6 +609,7 @@ class TrackerS23(tk.Tk):
             ("vitesse_kmh", "Vitesse"),
             ("batterie", "Batterie"),
             ("accel", "Accélération"),
+            ("mouvement", "Mouvement"),
             ("luminosite_lux", "Luminosité"),
             ("wifi", "Wi-Fi"),
             ("reseau", "Réseau mobile"),
@@ -647,15 +660,16 @@ class TrackerS23(tk.Tk):
         cadre_arbre = ttk.Frame(parent)
         cadre_arbre.pack(side="top", fill="both", expand=True, padx=8, pady=(0, 8))
 
-        colonnes = ("horodatage", "vitesse", "batterie", "accel", "luminosite", "wifi", "reseau")
+        colonnes = ("horodatage", "vitesse", "batterie", "accel", "mouvement", "luminosite", "wifi", "reseau")
         self.arbre_telemetrie = ttk.Treeview(cadre_arbre, columns=colonnes, show="headings", height=20)
         entetes = {
             "horodatage": ("Date/heure", 140),
             "vitesse": ("Vitesse (km/h)", 100),
             "batterie": ("Batterie", 130),
             "accel": ("Accél. (x,y,z)", 160),
+            "mouvement": ("Mouvement", 110),
             "luminosite": ("Luminosité (lux)", 110),
-            "wifi": ("Wi-Fi", 140),
+            "wifi": ("Wi-Fi", 200),
             "reseau": ("Réseau mobile", 140),
         }
         for cle, (titre, largeur) in entetes.items():
@@ -698,7 +712,7 @@ class TrackerS23(tk.Tk):
 
     def rafraichir_telemetrie(self):
         entrees_brutes = lire_telemetrie()  # (horodatage, vitesse, batt_pct, batt_statut, batt_temp,
-                                             #  accel_x, accel_y, accel_z, lux, ssid, rssi, operateur, type_reseau)
+                                            #  accel_x, accel_y, accel_z, lux, ssid, rssi, operateur, type_reseau)
         for item in self.arbre_telemetrie.get_children():
             self.arbre_telemetrie.delete(item)
 
@@ -731,8 +745,14 @@ class TrackerS23(tk.Tk):
             if batt_statut not in ("", "None"):
                 texte_batterie += f" ({batt_statut})"
             texte_accel = "—"
+            texte_mouvement = "—"
             if accel_x not in ("", "None"):
                 texte_accel = f"{accel_x}, {accel_y}, {accel_z}"
+                try:
+                    norme = calculer_norme_acceleration(float(accel_x), float(accel_y), float(accel_z))
+                    texte_mouvement = evaluer_mouvement(norme)
+                except ValueError:
+                    pass
             texte_wifi = formater_champ(ssid)
             if ssid not in ("", "None") and rssi not in ("", "None"):
                 texte_wifi += f" ({rssi} dBm)"
@@ -742,7 +762,7 @@ class TrackerS23(tk.Tk):
 
             self.arbre_telemetrie.insert("", "end", values=(
                 horodatage, formater_champ(vitesse), texte_batterie,
-                texte_accel, formater_champ(lux), texte_wifi, texte_reseau,
+                texte_accel, texte_mouvement, formater_champ(lux), texte_wifi, texte_reseau,
             ))
 
         # --- Mise à jour du bandeau résumé avec la mesure la plus récente ---
@@ -760,8 +780,18 @@ class TrackerS23(tk.Tk):
 
         if accel_x not in ("", "None"):
             self.labels_resume["accel"].config(text=f"x={accel_x}\ny={accel_y}\nz={accel_z}")
+            try:
+                norme = calculer_norme_acceleration(float(accel_x), float(accel_y), float(accel_z))
+                statut_mouvement = evaluer_mouvement(norme)
+                couleur = "#c0392b" if statut_mouvement == "En mouvement" else "#27ae60"
+                self.labels_resume["mouvement"].config(
+                    text=f"{statut_mouvement}\n({norme:.1f} m/s²)", foreground=couleur
+                )
+            except ValueError:
+                self.labels_resume["mouvement"].config(text="—", foreground="black")
         else:
             self.labels_resume["accel"].config(text="—")
+            self.labels_resume["mouvement"].config(text="—", foreground="black")
 
         self.labels_resume["luminosite_lux"].config(text=formater_champ(lux, " lux"))
 
@@ -778,14 +808,13 @@ class TrackerS23(tk.Tk):
     def demander_effacement_telemetrie(self):
         confirme = messagebox.askyesno(
             "Effacer la télémétrie",
-            "Voulez-vous vraiment effacer tout l'historique de télémétrie ?\n"
-            "Le fichier telemetrie.log sera vidé définitivement.\n"
-            "(Les positions de l'onglet Carte ne sont pas concernées.)",
+            "Voulez-vous vraiment effacer l'historique ?\n"
+            "(RaZ du fichier telemetrie.log)\n"
+            "l'onglet Carte n'est pas concerné.",
         )
         if confirme:
             effacer_telemetrie()
             self.rafraichir_telemetrie()
-
 
 if __name__ == "__main__":
     app = TrackerS23()
