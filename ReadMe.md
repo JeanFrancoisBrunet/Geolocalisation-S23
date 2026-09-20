@@ -1,6 +1,6 @@
 # GeolocS23 — Géolocalisation & Télémétrie Samsung S23 → Raspberry Pi 5
 
-**Suivi de position et de Télémétrie** (vitesse, batterie, accéléromètre,luminosité, Wi-Fi, réseau mobile) 
+**Suivi de Position et de Télémétrie** (vitesse, batterie, accéléromètre,luminosité, Wi-Fi, réseau mobile) 
 d'un Samsung S23 depuis un Raspberry Pi 5, via un tunnel WireGuard chiffré. 
 Le téléphone envoie périodiquement ses données à un petit serveur Flask hébergé sur le Pi5, qui les enregistre
 et permet de les visualiser (carte interactive + tableau de bord technique).
@@ -64,9 +64,8 @@ app.run(host="10.221.90.1", port=5000)  # à adapter à votre IP wg0
 
 Le serveur enregistre deux fichiers séparés :
 - `positions.log` : historique des positions (`horodatage,lat,lon`)
-- `telemetrie.log` : vitesse, batterie, accéléromètre, luminosité, Wi-Fi,
-  réseau — une ligne par envoi, colonnes fixes (valeur vide si un capteur a
-  échoué côté S23, jamais de colonne manquante)
+- `telemetrie.log` : vitesse, batterie, accéléromètre, luminosité, Wi-Fi,réseau 
+  une ligne par envoi, colonnes fixes (valeur vide si un capteur a échoué côté S23, jamais de colonne manquante)
 
 **Faire tourner le serveur en permanence (service systemd) :**
 
@@ -187,8 +186,7 @@ termux-job-scheduler --pending
 
 **d) Test**
 
-Redémarrer le S23, attendre le déverrouillage, puis (après le prochain
-cycle planifié) vérifier :
+Redémarrer le S23, attendre le déverrouillage, puis (après le prochain cycle planifié) vérifier :
 ```bash
 cat ~/geoloc.log
 ```
@@ -206,11 +204,9 @@ kill <PID>                              # arrêter un envoyer_position.py resté
 python3 ~/envoyer_position.py           # déclencher un envoi manuel immédiat, sans attendre le prochain cycle
 ```
 
-Purge périodique des logs sur le S23 (à faire de temps en temps, pas de
-rotation automatique) :
+Purge périodique des logs sur le S23 (à faire de temps en temps, pas de rotation automatique) :
 ```bash
 > ~/geoloc.log
-> ~/telemetrie.log
 ```
 
 ## Télémétrie collectée
@@ -219,16 +215,16 @@ En plus de la position GPS, chaque envoi tente de récupérer (chaque source
 est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la
 position) :
 
-| Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                                                                                                          |
-|---            |---                                                   |---                                                                                                                                                                                                                                                |
-| Vitesse       | champ `speed` du JSON `termux-location`              | en km/h, fiabilité variable selon le provider GPS/réseau                                                                                                                                                                                          |
-| Batterie      | `termux-battery-status`                              | pourcentage, statut de charge, température                                                                                                                                                                                                        |
-| Accéléromètre | `termux-sensor -s accelerometer -n 1`                | **instantané simple** (une mesure au moment de l'envoi), pas un flux continu — reste compatible avec le fonctionnement one-shot du job-scheduler. Sert aussi à calculer l'indicateur Stable/En mouvement (voir onglet Télémétrie)                 |
-| Luminosité    | `termux-sensor -s "STK33911 Light  Non-wakeup" -n 1` | nom de capteur **spécifique au modèle de téléphone** (plusieurs capteurs "Light" existent sur le S23) — à vérifier avec `termux-sensor -l` sur un autre appareil                                                                                  |
-| Wi-Fi         | `termux-wifi-connectioninfo`                         | SSID + RSSI, vide si pas de Wi-Fi connecté (téléphone en 4G/5G)                                                                                                                                                                                   |
-| Réseau mobile | `termux-telephony-deviceinfo`                        | opérateur (`network_operator_name`) et type de réseau (`network_type`, ex. `"lte"`)                                                                                                                                                               |
+| Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                                                                                              |
+|---            |---                                                   |---                                                                                                                                                                                                                                    |
+| Vitesse       | champ `speed` du JSON `termux-location`              | en km/h, fiabilité variable selon le provider GPS/réseau                                                                                                                                                                              |
+| Batterie      | `termux-battery-status`                              | pourcentage, statut de charge, température                                                                                                                                                                                            |
+| Accéléromètre | `termux-sensor -s accelerometer -n 1`                | **instantané simple** (une mesure au moment de l'envoi), pas un flux continu — reste compatible avec le fonctionnement one-shot du job-scheduler. Sert aussi à calculer l'indicateur Stable/En mouvement (voir onglet Télémétrie)     |
+| Luminosité    | `termux-sensor -s "STK33911 Light  Non-wakeup" -n 1` | nom de capteur **spécifique au modèle de téléphone** (plusieurs capteurs "Light" existent sur le S23) — à vérifier avec `termux-sensor -l` sur un autre appareil                                                                      |
+| Wi-Fi         | `termux-wifi-connectioninfo`                         | SSID + RSSI, vide si pas de Wi-Fi connecté (téléphone en 4G/5G)                                                                                                                                                                       |
+| Réseau mobile | `termux-telephony-deviceinfo`                        | opérateur (`network_operator_name`) et type de réseau (`network_type`, ex. `"lte"`)                                                                                                                                                   |
 
-## Tracker_S23.py (remplace l'ancien `visualiseur_geoloc.py`)
+## Tracker_S23.py (remplace l'ancien `visualiseur_geoloc.py` - version de tests)
 
 Interface Tkinter à deux onglets, à lancer sur le Pi5 :
 

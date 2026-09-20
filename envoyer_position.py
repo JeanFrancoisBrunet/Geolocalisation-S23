@@ -15,7 +15,6 @@ import requests
 URL_SERVEUR = "http://10.221.90.1:5000/position"  # IP WireGuard du Pi5
 FICHIER_LOG = "/data/data/com.termux/files/home/geoloc.log"
 
-
 def executer_termux(commande, timeout=10):
     """Exécute une commande termux-api et renvoie le JSON parsé, ou None en cas d'échec.
     Chaque capteur est optionnel : une panne sur l'un ne doit jamais bloquer les autres."""
@@ -24,7 +23,6 @@ def executer_termux(commande, timeout=10):
         return json.loads(resultat.stdout)
     except Exception:
         return None
-
 
 def obtenir_position():
     """Position + vitesse (le champ 'speed', en m/s, vient directement de termux-location)."""
@@ -38,7 +36,6 @@ def obtenir_position():
         "vitesse_kmh": round(vitesse_ms * 3.6, 1),
     }
 
-
 def obtenir_batterie():
     data = executer_termux(["termux-battery-status"])
     if data is None:
@@ -48,7 +45,6 @@ def obtenir_batterie():
         "batterie_statut": data.get("status"),       # CHARGING / DISCHARGING / FULL / ...
         "batterie_temp": data.get("temperature"),
     }
-
 
 def obtenir_accelerometre():
     """Instantané simple (une seule mesure) — pas de flux continu, pour rester
@@ -70,11 +66,7 @@ def obtenir_accelerometre():
         "accel_z": round(valeurs[2], 3),
     }
 
-
 def obtenir_luminosite():
-    # Filtre spécifique au S23 : plusieurs capteurs contiennent "Light" (variantes
-    # streaming, auto-brightness...) et la recherche termux-sensor est sensible à
-    # la casse, donc "light" en minuscules ne matchait aucun capteur.
     data = executer_termux(["termux-sensor", "-s", "STK33911 Light  Non-wakeup", "-n", "1"], timeout=15)
     if not data:
         return {}
@@ -85,7 +77,6 @@ def obtenir_luminosite():
     if not valeurs:
         return {}
     return {"luminosite_lux": round(valeurs[0], 1)}
-
 
 def obtenir_wifi():
     data = executer_termux(["termux-wifi-connectioninfo"])
@@ -99,7 +90,6 @@ def obtenir_wifi():
         "wifi_rssi": data.get("rssi"),
     }
 
-
 def obtenir_reseau_mobile():
     data = executer_termux(["termux-telephony-deviceinfo"])
     if not data:
@@ -109,26 +99,43 @@ def obtenir_reseau_mobile():
         "type_reseau": data.get("network_type") or None,
     }
 
-
 def collecter_toutes_les_donnees():
     """Assemble tout ce qui a pu être récupéré. La position est indispensable
-    (elle lève une exception si elle échoue) ; le reste est du bonus optionnel."""
+    (elle lève une exception si elle échoue) ; le reste est du bonus optionnel.
+    On note au passage les capteurs optionnels qui n'ont rien renvoyé, pour
+    pouvoir le signaler dans le log sans pour autant bloquer l'envoi."""
     donnees = {}
     donnees.update(obtenir_position())
-    donnees.update(obtenir_batterie())
-    donnees.update(obtenir_accelerometre())
-    donnees.update(obtenir_luminosite())
-    donnees.update(obtenir_wifi())
-    donnees.update(obtenir_reseau_mobile())
-    return donnees
 
+    capteurs_optionnels = {
+        "batterie": obtenir_batterie,
+        "accel": obtenir_accelerometre,
+        "luminosite": obtenir_luminosite,
+        "wifi": obtenir_wifi,
+        "reseau": obtenir_reseau_mobile,
+    }
+
+    manquants = []
+    for nom, fonction in capteurs_optionnels.items():
+        resultat = fonction()
+        if resultat:
+            donnees.update(resultat)
+        elif nom != "wifi":
+            # "wifi" est normalement vide dès qu'on est en 4G/5G : ce n'est pas
+            # un échec, donc on ne le compte pas comme un capteur manquant.
+            manquants.append(nom)
+
+    return donnees, manquants
 
 if __name__ == "__main__":
     horodatage = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     try:
-        donnees = collecter_toutes_les_donnees()
+        donnees, manquants = collecter_toutes_les_donnees()
         reponse = requests.post(URL_SERVEUR, json=donnees, timeout=10)
-        ligne = f"[{horodatage}] Envoyé : {reponse.json()}\n"
+        if manquants:
+            ligne = f"[{horodatage}] Envoyé (incomplet, manquants: {', '.join(manquants)}) : {reponse.json()}\n"
+        else:
+            ligne = f"[{horodatage}] Envoyé : {reponse.json()}\n"
     except Exception as erreur:
         ligne = f"[{horodatage}] Erreur : {erreur}\n"
 

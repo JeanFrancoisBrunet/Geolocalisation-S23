@@ -13,13 +13,11 @@
 # Lancer manuellement un envoi de données à partir du S23
 # python3 ~/envoyer_position.py
 #
-# Lire les fichiers geoloc.log et telemetrie.log
-# cat ~/geoloc.log
-# cat ~/telemetrie.log  
+# Lire sur le S23 le fichier geoloc.log 
+# cat ~/geoloc.log 
 #
-# Purge les fichiers geoloc.log et telemetrie.log (à faire de temps en temps)
+# Purge sur S23 le fichier geoloc.log (à faire de temps en temps)
 # > ~/geoloc.log
-# > ~/telemetrie.log
 #
 #  Auteur : Jean-François BRUNET – JFBConseils – Septembre 2026
 # ======================================================================================================================

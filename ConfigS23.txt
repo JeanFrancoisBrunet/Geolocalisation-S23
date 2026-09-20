@@ -1,0 +1,30 @@
+# Rendre le programme python exécutable
+chmod +x ~/envoyer_position.py
+
+# Enregistre une tâche planifiée auprès du système Android (via l'API JobScheduler), 
+# il se chargera de réveiller Termux et d'exécuter le script au bon moment, y compris si le téléphone est en veille profonde.
+termux-job-scheduler --job-id 1001 --script ~/envoyer_position.py --period-ms 28800000 --network any --persisted true
+# Explications : 
+# --job-id 1001	: Identifiant unique du job. Sert à le retrouver, le modifier ou l'annuler ensuite. Si on relance la même commande avec le même id, ça remplace le job existant plutôt que de créer un doublon.
+# --script ~/envoyer_position.py : Chemin du script à exécuter à chaque déclenchement. Doit être exécutable (chmod +x) avec un shebang valide.
+# --period-ms 28800000	: Intervalle entre deux exécutions, en millisecondes : 28 800 000 ms = 8h (3 600 000 ms = 1h, la valeur mini acceptable pour Android est 900 000 ms = 15 min). Android n'exécute pas pile à l'heure — il choisit un moment approximatif dans une fenêtre autour de cette période, pour optimiser la batterie en groupant les réveils avec d'autres tâches système.
+# --network any : Condition requise pour que le job se déclenche. Il faut une connexion réseau active (peu importe laquelle — Wi-Fi ou données mobiles). Si aucun réseau n'est disponible au moment prévu, Android retarde l'exécution jusqu'à ce que la condition soit remplie.
+# --persisted true : Le job survit à un redémarrage du téléphone. Sans cette option, un reboot annulerait la planification et il faudrait la recréer manuellement — avec elle, plus besoin de dépendre de Termux:Boot pour ce script précis.
+
+# Liste tous les jobs actuellement enregistrés sur S23 et en attente d'exécution sur le système.
+termux-job-scheduler --pending
+
+# Lancer manuellement un envoi de données à partir du S23
+python3 ~/envoyer_position.py
+
+# Lire sur S23 le fichier geoloc.log
+cat ~/geoloc.log     
+
+# Purge sur S23 le fichier geoloc.log (à faire de temps en temps)
+> ~/geoloc.log
+
+# Vérifie sur S23 si envoyer_position.py est actif
+ps aux | grep envoyer_position
+
+# Supprime sur S23 le processus actif
+kill 1001
