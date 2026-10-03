@@ -1,0 +1,529 @@
+# GeolocS23 — Géolocalisation & Télémétrie Samsung S23 → Raspberry Pi 5
+
+**Suivi de Position et de Télémétrie** (vitesse, batterie, accéléromètre,luminosité, Wi-Fi, réseau mobile) 
+d'un Samsung S23 depuis un Raspberry Pi 5, via un tunnel WireGuard chiffré. 
+Le téléphone envoie périodiquement ses données à un petit serveur Flask hébergé sur le Pi5, qui les enregistre
+et permet de les visualiser (carte interactive + tableau de bord technique) puis de les analyser :
+détection des **lieux fréquentés** et du temps passé dans chacun.
+
+## Fonctionnement général
+
+```
+[Samsung S23]                      [Raspberry Pi 5]
+  Termux + Termux:API        --->    serveur_geoloc.py (Flask, service systemd)
+  envoyer_position.py                positions.log
+  (déclenché par                     telemetrie.log
+   termux-job-scheduler,             lieux.json (lieux nommés, créé par le Tracker)
+   via tunnel WireGuard)             Tracker_S23.py (Tkinter, onglets
+                                      Carte + Télémétrie + Lieux)
+```
+
+Le téléphone n'a besoin d'aucune connexion Wi-Fi partagée avec le Pi5 : le
+tunnel WireGuard fonctionne aussi bien à la maison qu'en 4G/5G en mobilité.
+
+`envoyer_position.py` est un script **one-shot** (il collecte, envoie, puis se termine) 
+déclenché toutes les X heures par `termux-job-scheduler`, l'API de planification d'Android. 
+C'est Android lui-même qui réveille brièvement Termux au bon moment, exécute le script, 
+puis le relâche — le script ne contient aucune boucle et ne tourne pas en continu. Un simple
+`termux-wake-lock`, posé au démarrage du téléphone, maintient Termux vivant (voir § Prérequis).
+
+Si le Pi5 est injoignable au moment de l'envoi (tunnel coupé, Pi5 ou box redémarrés…), la position n'est pas perdue :
+elle est gardée sur le S23 avec son heure réelle et renvoyée dès que la liaison revient, et un nouvel essai est planifié
+15 minutes plus tard (voir § Fiabilité de l'envoi).
+
+## Prérequis
+
+### Sur le Raspberry Pi 5
+
+- Python 3 avec Flask (souvent déjà présent sur Raspberry Pi OS)
+- `pip install pillow tkintermapview --break-system-packages`
+- Un tunnel WireGuard fonctionnel entre le Pi5 (serveur) et le S23 (client)
+- Un accès Internet sur le Pi5 pour le fond de carte OpenStreetMap et, en option, la recherche d'adresse de l'onglet Lieux (aucune dépendance Python supplémentaire :
+  la recherche d'adresse utilise uniquement la bibliothèque standard)
+
+### Sur le Samsung S23
+
+- **Termux**, installé **depuis F-Droid** (`f-droid.org/packages/com.termux`), pas depuis le Play Store — la version Play Store n'est plus maintenue par l'éditeur et a divergé du code source officiel.
+- **Termux:API** (même source, F-Droid), plugin nécessaire pour accéder au GPS et aux capteurs depuis Termux.
+- L'application WireGuard officielle, avec un tunnel déjà configuré vers le Pi5.
+- **Termux:Boot** (même source, F-Droid), réglé en batterie **« Non restreint »** comme Termux et Termux:API.
+  Il ne lance qu'une commande au démarrage : `~/.termux/boot/lancer_geoloc.sh` contient `termux-wake-lock`.
+  La planification elle-même n'en dépend pas : `termux-job-scheduler --persisted true` survit déjà à un redémarrage.
+
+## Installation
+
+### 1. Serveur sur le Pi5
+
+```bash
+mkdir -p ~/Projects/GeolocS23
+cd ~/Projects/GeolocS23
+# copier serveur_geoloc.py, Tracker_S23.py, et le dossier icons/ ici
+# (lieux.json sera créé automatiquement par le Tracker au premier lieu nommé)
+```
+
+Dans `serveur_geoloc.py`, l'adresse d'écoute doit correspondre à l'IP
+WireGuard du Pi5 (visible avec `ip a`, interface `wg0`) :
+
+```python
+app.run(host="10.221.90.1", port=5000)  # à adapter à votre IP wg0
+```
+
+Le serveur enregistre deux fichiers séparés :
+- `positions.log` : historique des positions (`horodatage,lat,lon`)
+- `telemetrie.log` : vitesse, batterie, accéléromètre, luminosité, Wi-Fi, réseau, et deux colonnes
+  `position_ancienne` / `age_position_s` (voir § Localisation) ; une ligne par envoi, colonnes fixes
+  (valeur vide si un capteur a échoué côté S23, jamais de colonne manquante)
+
+Le serveur écrit normalement l'heure de **réception**. 
+Une position gardée en attente par le S23 arrive avec son heure réelle dans le champ `horodatage_s23` (format `AAAA-MM-JJ HH:MM:SS`) : 
+le serveur la conserve, pour que le Tracker place le point au bon moment. Une valeur qui n'est pas une date valide est ignorée (heure de réception utilisée). 
+Ce champ n'est pas une colonne de `telemetrie.log` : le format des deux fichiers ne change pas.
+
+La liste `COLONNES_TELEMETRIE` doit être **identique** dans `serveur_geoloc.py` et `Tracker_S23.py`.
+Le Tracker relit aussi les anciennes lignes à 12 colonnes (écrites avant l'ajout des deux dernières) :
+il les complète, l'historique existant reste donc visible après une mise à jour.
+
+**Faire tourner le serveur en permanence (service systemd) :**
+
+Créer `/etc/systemd/system/geoloc-serveur.service` :
+
+```ini
+[Unit]
+Description=Serveur de reception des positions GPS (GeolocS23)
+After=network-online.target wg-quick@wg0.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=<votre_utilisateur>
+WorkingDirectory=/home/<votre_utilisateur>/Projects/GeolocS23
+ExecStart=/usr/bin/python3 /home/<votre_utilisateur>/Projects/GeolocS23/serveur_geoloc.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Puis :
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable geoloc-serveur.service
+sudo systemctl start geoloc-serveur.service
+sudo systemctl status geoloc-serveur.service   # doit afficher "active (running)"
+```
+
+Consulter les logs : `sudo journalctl -u geoloc-serveur.service -f`
+
+**Après toute mise à jour de `serveur_geoloc.py`**, redémarrer le service pour que le changement soit pris en compte :
+```bash
+sudo systemctl restart geoloc-serveur.service
+```
+
+### 2. Script d'envoi sur le S23 (Termux)
+
+```bash
+pkg update && pkg upgrade
+pkg install nano python termux-api
+pip install requests
+```
+
+Copier `envoyer_position.py` dans `~/` sur le S23.
+Rendre le script exécutable, avec un shebang pointant vers le Python de Termux 
+(indispensable pour `termux-job-scheduler`, qui lance le script comme un exécutable) :
+```bash
+chmod +x ~/envoyer_position.py
+```
+La première ligne du fichier doit être :
+```python
+#!/data/data/com.termux/files/usr/bin/python3
+```
+
+Test manuel avant automatisation :
+```bash
+python3 -u ~/envoyer_position.py
+cat ~/geoloc.log
+```
+Une ligne `Envoyé : {'status': 'ok'}` doit apparaître (des précisions peuvent s'insérer entre parenthèses
+après « Envoyé » : capteurs manquants, position de secours, positions en attente renvoyées…).
+
+### 3. Automatisation avec termux-job-scheduler
+
+**a) WireGuard toujours actif**
+Paramètres → Connexions → Plus de paramètres de connexion → VPN → icône ⚙️
+à côté du tunnel → activer **« VPN toujours actif »**. Le tunnel se reconnecte alors automatiquement, y compris après un redémarrage.
+
+**b) Planifier la collecte périodique** (voir aussi `ConfigS23.txt`) :
+```bash
+termux-job-scheduler --job-id 1001 --script ~/envoyer_position.py \
+  --period-ms 28800000 --network any --persisted true --battery-not-low true
+```
+- `--job-id 1001` : identifiant du job ; relancer la commande avec le même id remplace le job existant plutôt que d'en créer un doublon.
+- `--period-ms` : intervalle en millisecondes (28 800 000 = 8h). Minimum accepté par Android : 900 000 ms (15 min). 
+  Android choisit un moment approximatif dans une fenêtre autour de cette période — ne pas s'attendre à un déclenchement pile à l'heure.
+- `--network any` : le job attend qu'une connexion réseau soit disponible avant de s'exécuter (Wi-Fi ou données mobiles).
+- `--persisted true` : le job survit à un redémarrage du téléphone.
+- `--battery-not-low true` : le job ne démarre pas quand la batterie est faible.
+
+Le script planifie lui-même un second job, `1002` (nouvel essai après un échec), avec les mêmes réglages :
+il ne faut pas le créer à la main (voir § Fiabilité de l'envoi).
+
+La fenêtre **« Réglages Freq. Datas (S23) »** de `Tracker_S23.py` génère cette commande automatiquement 
+(minutes / fois par jour / fois par semaine / fois par mois) et permet de la copier directement dans le presse-papiers.
+
+Vérifier que le job est bien enregistré :
+```bash
+termux-job-scheduler --pending
+```
+
+**c) Permissions Android nécessaires**
+
+- **Termux:API** → Paramètres → Position → Autorisations de l'application →
+  **« Autoriser tout le temps »** (indispensable : sans cette autorisation
+  en arrière-plan, `termux-location` expire après un redémarrage).
+- **Termux:API** → Autorisations → **Téléphone** → autoriser (nécessaire
+  pour `termux-telephony-deviceinfo` : opérateur, type de réseau).
+- **Termux** et **Termux:API** → Batterie → **« Non restreint »** (évite
+  qu'Android limite l'exécution du job en arrière-plan). Sur les Samsung,
+  vérifier aussi *Paramètres → Maintenance de l'appareil → Batterie →
+  Limites d'utilisation en arrière-plan* pour ces deux applications.
+
+**d) Test**
+
+Redémarrer le S23, attendre le déverrouillage, puis (après le prochain cycle planifié) vérifier :
+```bash
+cat ~/geoloc.log
+```
+Une ligne `Envoyé … : {'status': 'ok'}` doit apparaître sans qu'aucune action manuelle n'ait été faite,
+et `positions.log` / `telemetrie.log` doivent recevoir une nouvelle ligne côté Pi5. 
+Pour un contrôle immédiat de toute la chaîne (script, jobs, envoi, file d'attente), voir § Vérification rapide.
+**Compter au moins 24h avant de juger la stabilité du réglage** : il faut voir plusieurs cycles passer, 
+y compris un cycle de nuit écran éteint, pour confirmer qu'aucun capteur ne timeout.
+
+### Gestion du job (rappel)
+
+```bash
+termux-job-scheduler --pending                # lister les jobs en attente (1001 en permanence ; 1002 seulement pendant un nouvel essai)
+termux-job-scheduler --cancel --job-id 1002   # annuler à la main un nouvel essai en cours
+kill <PID>                                    # arrêter un envoyer_position.py resté actif (rare, one-shot)
+python3 ~/envoyer_position.py                 # déclencher un envoi manuel immédiat, sans attendre le prochain cycle
+```
+
+Purge périodique des logs sur le S23 (à faire de temps en temps, pas de rotation automatique) :
+```bash
+> ~/geoloc.log
+```
+
+## Télémétrie collectée
+
+En plus de la position GPS, chaque envoi tente de récupérer (chaque source
+est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la
+position) :
+
+| Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                                                                                              |
+|---            |---                                                   |---                                                                                                                                                                                                                                    |
+| Vitesse       | champ `speed` du JSON `termux-location`              | en km/h, fiabilité variable selon le provider GPS/réseau                                                                                                                                                                              |
+| Batterie      | `termux-battery-status`                              | pourcentage, statut de charge, température                                                                                                                                                                                            |
+| Accéléromètre | `termux-sensor -s accelerometer -n 1`                | **instantané simple** (une mesure au moment de l'envoi), pas un flux continu — reste compatible avec le fonctionnement one-shot du job-scheduler. Sert aussi à calculer l'indicateur Stable/En mouvement (voir onglet Télémétrie)     |
+| Luminosité    | `termux-sensor -s "STK33911 Light  Non-wakeup" -n 1` | nom de capteur **spécifique au modèle de téléphone** (plusieurs capteurs "Light" existent sur le S23) — à vérifier avec `termux-sensor -l` sur un autre appareil                                                                      |
+| Wi-Fi         | `termux-wifi-connectioninfo`                         | SSID + RSSI, vide si pas de Wi-Fi connecté (téléphone en 4G/5G)                                                                                                                                                                       |
+| Réseau mobile | `termux-telephony-deviceinfo`                        | opérateur (`network_operator_name`) et type de réseau (`network_type`, ex. `"lte"`)                                                                                                                                                   |
+
+### Localisation : tentatives successives et position ancienne
+
+La position est la seule donnée indispensable. `envoyer_position.py` tente d'abord un fix récent, dans cet ordre, jusqu'à la première réussite :
+
+1. `network` (40 s) ;
+2. `gps` (40 s) ;
+3. `network`, 2e essai (30 s) ;
+4. **dernière position connue** du système (`termux-location -r last`, 10 s) — dernier recours.
+
+Le motif exact de chaque échec (délai dépassé, sortie vide, réponse non JSON…) est écrit dans `geoloc.log`.
+Durée maximale d'un cycle si tout échoue : 120 s.
+
+**Pourquoi le dernier recours ?** Quand le téléphone est immobile, il arrive qu'aucun fix récent ne soit disponible et 
+que les trois premières tentatives expirent (`Erreur : position introuvable — network : délai dépassé …`). Plutôt que de laisser
+un trou dans l'historique, le script envoie alors la dernière position connue, marquée dans le JSON :
+
+| Champ               | Contenu                                                         |
+|---                  |---                                                              |
+| `position_ancienne` | `true` uniquement dans ce cas (champ absent pour un fix récent) |
+| `age_position_s`    | âge du fix en secondes, si Android le fournit                   |
+
+La vitesse d'une position ancienne est forcée à 0 (elle n'est plus d'actualité). Si aucune position n'est en cache,
+le cycle échoue comme avant (`Erreur : position introuvable …`) et rien n'est envoyé.
+Le Tracker signale ces positions (voir onglets Carte et Télémétrie) ; elles ne sont pas exclues des calculs de l'onglet Lieux.
+
+**Limite constatée.** Quand c'est l'application Termux:API elle-même qui ne répond plus (tout `termux-*` expire, y compris `termux-battery-status`), 
+le dernier recours échoue aussi, puisqu'il passe par la même application. En cas d'échec de position,
+le script ajoute donc en fin de ligne une **sonde** : `sonde termux-battery-status : répond en 0.6 s` (Termux:API vivante, seule la localisation pose problème)
+ou `délai dépassé (10 s)` (Termux:API bloquée). La cause du blocage n'est pas élucidée ; en attendant, le nouvel essai à 15 min (voir ci-dessous) limite la perte à quelques heures au pire.
+
+### Fiabilité de l'envoi : file d'attente et nouvel essai
+
+Trois mécanismes évitent de perdre des points quand le Pi5 ou la position sont momentanément indisponibles :
+
+1. **Envoi en 3 tentatives** (pause de 15 s, 10 s de délai chacune). Une réponse HTTP autre que 2xx compte comme un échec.
+2. **File d'attente** `~/geoloc_attente.json` sur le S23 : si l'envoi échoue, la position est conservée avec son heure réelle (`horodatage_s23`). 
+   Au passage suivant, les positions en attente partent **d'abord, dans l'ordre chronologique**, puis la nouvelle. 
+   La première bénéficie de 3 tentatives, les suivantes d'une seule (la liaison vient de marcher) ; au premier échec, le reste est conservé. 
+   Le fichier contient un JSON par ligne et 100 positions au maximum (les plus anciennes sont abandonnées).
+   Une position introuvable n'empêche pas de renvoyer l'attente.
+3. **Nouvel essai à 15 min** : après un échec (position introuvable ou envoi impossible), le script planifie le job `1002`
+   (période de 15 min, le minimum Android), qui relance le même script. Le compteur `~/geoloc_retry.count` limite à **8 essais** (2 h) : 
+   ensuite le job est annulé et l'on attend le créneau régulier de 8 h. Dès qu'un cycle réussit, le compteur est remis à 0 et le job `1002` annulé.
+
+Un verrou (`~/geoloc.lock`) empêche deux envois simultanés (créneau de 8 h et nouvel essai qui tombent ensemble) :
+le second écrit `Ignoré : un autre envoi est déjà en cours`.
+
+Fin de ligne dans `geoloc.log` après un échec :
+
+| Fin de ligne                                                                     | Signification                                                                                  |
+|---                                                                               |---                                                                                             |
+| `envoi impossible : ConnectTimeout après 3 essai(s) — 1 position(s) en attente \ | nouvel essai dans 15 min (1/8)` | Pi5 injoignable ; position gardée, 1er nouvel essai planifié |
+| `2 position(s) en attente renvoyée(s)` (dans la parenthèse de « Envoyé »)        | La liaison est revenue : le retard est rattrapé                                                |
+| `abandon après 8 nouveaux essais, prochain essai au créneau de 8 h`              | Toujours en échec après 2 h ; la file d'attente reste, elle sera renvoyée plus tard            |
+| `nouvel essai NON planifié (termux-job-scheduler n'a pas répondu)`               | Termux:API ne répond pas : pas de nouvel essai avant le créneau de 8 h                         |
+
+Pour repartir de zéro côté S23 : `rm -f ~/geoloc_attente.json ~/geoloc_retry.count` puis
+`termux-job-scheduler --cancel --job-id 1002`.
+
+**Sonde de diagnostic (facultative).** `sonde_api.py` est un petit script indépendant, planifié sous le job `2`
+(`termux-job-scheduler --job-id 2 --script ~/sonde_api.py --period-ms 1800000 --persisted true`). Toutes les 30 min il lance
+`termux-battery-status` et écrit dans `~/sonde_api.log` si Termux:API a répondu et en combien de temps. Utile pour situer dans la journée un blocage de Termux:API ; 
+à retirer ensuite (`termux-job-scheduler --cancel --job-id 2`).
+
+### Vérification rapide
+
+Dans Termux (S23) :
+
+```bash
+python3 -m py_compile ~/envoyer_position.py && echo "1) syntaxe OK"; echo "2) jobs :"; termux-job-scheduler --pending | cut -c1-75; echo "3) envoi :"; python3 ~/envoyer_position.py; tail -n 1 ~/geoloc.log | cut -c1-300; echo "4) attente :"; ls ~/geoloc_attente.json 2>/dev/null || echo "vide (normal)"
+```
+
+Attendu : syntaxe OK ; le job 1001 listé (le 1002 n'apparaît que pendant un nouvel essai) ; `Envoyé : {'status': 'ok'}` ;
+file d'attente vide. Sur le Pi5 : `systemctl is-active geoloc-serveur.service` doit répondre `active`, et la dernière ligne de `positions.log` doit porter l'heure du test.
+
+Test de la file d'attente : sur le Pi5, `sudo systemctl stop geoloc-serveur.service` ; sur le S23, relancer
+`python3 ~/envoyer_position.py` (≈ 1 min) : la ligne finit par `1 position(s) en attente | nouvel essai dans 15 min (1/8)`.
+Puis `sudo systemctl start geoloc-serveur.service` et relancer le script : `1 position(s) en attente renvoyée(s)`, et le job
+`1002` disparaît de `termux-job-scheduler --pending`.
+
+## Tracker_S23.py (remplace l'ancien `visualiseur_geoloc.py` - version de tests)
+
+Interface Tkinter à trois onglets (**Carte**, **Télémétrie**, **Lieux**), à lancer sur le Pi5 :
+
+```bash
+python3 Tracker_S23.py
+```
+
+### Onglet Carte
+
+- Carte OpenStreetMap avec trajet tracé (ligne fine bleu discret) et marqueurs, dernière position étiquetée « Position actuelle ».
+- Liste latérale de l'historique (date/heure, latitude, longitude) avec ascenseur — affiche **toutes** les positions de la période sélectionnée 
+  (contrairement à la carte, volontairement simplifiée pour rester lisible).
+- **Filtre par période** : toutes les positions, dernières 24h, 7 ou 30 derniers jours, ou plage personnalisée choisie directement
+  parmi les horodatages déjà enregistrés (menus déroulants, pas de saisie libre).
+- **Regroupement adaptatif** (carte uniquement) : automatique (1 point par heure sur une semaine, par jour sur un mois, etc.), 
+  ou choix manuel (tous les points / 1 par heure / 1 par jour). Le tracé du trajet utilise toujours l'ensemble des points de la période.
+- **Déduplication spatiale** (carte uniquement) : si le téléphone reste immobile, seule la dernière position de la zone stationnaire 
+  (< 30 m) est affichée, pour éviter les marqueurs superposés.
+- **Positions anciennes** (dernière position connue envoyée en dernier recours, voir § Localisation) : ligne grisée avec une étoile `*` dans la liste, 
+  marqueur gris étiqueté « (ancienne) » sur la carte, et mention dans le bandeau du bas quand la dernière position est ancienne (avec l'âge du fix).
+- **Bouton « Effacer les positions »** : après confirmation, archive d'abord `positions.log` en
+  `positions.log.bak_AAAAMMJJ_HHMMSS`, puis repart d'un fichier vide. Les 10 archives les plus récentes sont conservées
+  (`NB_ARCHIVES_A_CONSERVER` dans le script) ; les plus anciennes sont supprimées.
+
+### Onglet Télémétrie
+
+- Bandeau résumé affichant la dernière mesure connue : vitesse, batterie, accélération (x, y, z), 
+  **indicateur Stable / En mouvement**, luminosité, Wi-Fi, réseau mobile.
+- L'indicateur de mouvement est calculé à partir de la norme du vecteur accélération (`√(x²+y²+z²)`) :
+  proche de 9,8 m/s² (gravité seule) → **Stable** (badge vert) ; écart de plus de 1,5 m/s² → **En mouvement**
+  (badge rouge). Comme la mesure est un instantané unique par cycle, c'est un indicateur ponctuel 
+  (l'état du téléphone à l'instant précis de l'envoi), pas un suivi d'activité continu. 
+  Le même indicateur apparaît aussi en colonne dans le tableau d'historique.
+- Tableau d'historique, avec le même système de filtre que l'onglet Carte :
+  période prédéfinie (24h / 7j / 30j) ou **Personnalisée** avec sélection
+  Du/Au parmi les horodatages enregistrés, validée par le bouton **Appliquer**.
+- Colonne **Position** du tableau : « réelle », ou « ancienne (6 h 12) » avec l'âge du fix quand il s'agit de la dernière position connue.
+- **Bouton « Effacer la télémétrie »** : après confirmation, archive `telemetrie.log` en `telemetrie.log.bak_AAAAMMJJ_HHMMSS`
+  puis repart d'un fichier vide, sans toucher à `positions.log` (même règle des 10 archives conservées).
+
+### Onglet Lieux
+
+Détecte les endroits où le téléphone séjourne (*stay points*) et calcule le **temps passé par lieu**, à partir de `positions.log` uniquement.
+
+**Principe**
+
+- Un **séjour** regroupe des relevés consécutifs proches (dans le *rayon d'un lieu*, 100 m par défaut, autour du centre du groupe). 
+  Un nouveau séjour démarre si le relevé est trop loin, ou si l'écart avec le relevé précédent dépasse l'*écart max* (48 h par défaut) :
+  on ne suppose pas que le téléphone est resté sur place pendant un trou de données.
+- Un **lieu** regroupe les séjours proches les uns des autres (même rayon). Son centre est la moyenne des relevés, pondérée par leur nombre.
+- Les relevés étant espacés (3 par jour avec le réglage par défaut), l'heure exacte d'arrivée ou de départ est inconnue. 
+  Chaque lieu a donc **deux durées** :
+  - **Mesuré** : du premier au dernier relevé du séjour (minimum garanti) ;
+  - **Estimé** : le mesuré + la moitié de l'intervalle avant et de l'intervalle après le séjour. 
+    Fiable pour les longs séjours (domicile, bureau), grossier pour un passage isolé (un seul relevé : 
+    mesuré à 0 min, mais estimé à la moitié des deux intervalles voisins).
+- Les intervalles plus longs que l'écart max ne sont attribués à aucun lieu : ils forment les **trous de données**.
+- Les positions anciennes (dernière position connue) sont comptées comme des relevés normaux. La nuit, téléphone immobile,
+  elles prolongent en général le séjour au bon endroit.
+
+**Affichage**
+
+- Ligne de synthèse : nombre de lieux, nombre de relevés, période analysée, temps attribué à des lieux (avec son pourcentage) et trous de données.
+- Tableau **Lieux fréquentés**, du plus long au plus court : nombre de séjours, durée mesurée, durée estimée, part (durée estimée / période analysée).
+- Tableau **Séjours du lieu sélectionné** (du plus récent au plus ancien) :
+  arrivée, départ, durées mesurée et estimée, nombre de relevés.
+- Carte OpenStreetMap avec un marqueur par lieu (nom + durée estimée ; marqueur gris pour un lieu non nommé). 
+  Sélectionner un lieu dans la liste centre la carte dessus.
+- Paramètres : **période** (toutes les positions, 24 h, 7 ou 30 derniers jours),
+  **rayon d'un lieu** (m) et **écart max entre 2 relevés** (h), appliqués par le bouton **Appliquer** (ou **Rafraîchir**).
+
+**Nommer, déplacer, retrouver l'adresse d'un lieu**
+
+- **Nommer le lieu…** : associe un nom (Domicile, Bureau…) au lieu sélectionné.
+  Le nom et la position sont enregistrés dans `lieux.json`. Donner un nom déjà utilisé à un autre lieu 
+  **fusionne** les deux en une seule ligne. Sur un lieu déjà nommé, la même commande le renomme.
+- **Retirer le nom** : supprime le nom (avec confirmation).
+- **Déplacer le lieu** : pour affiner une position approximative.
+  1. Sélectionner un lieu **nommé**, cliquer sur **Déplacer le lieu**.
+  2. Cliquer sur la carte à l'endroit voulu (un simple clic, sans faire glisser la carte : 
+     on peut zoomer et se déplacer avant). Un marqueur bleu « Nouvelle position » apparaît.
+  3. Valider la confirmation, qui indique la distance de déplacement :
+     `lieux.json` est mis à jour. **Échap**, le bouton « Annuler le déplacement »,
+     un rafraîchissement ou un changement de sélection annulent le mode.
+  Pour un lieu nommé, la carte utilise la **position enregistrée** dans `lieux.json`
+  (et non le centre calculé des relevés). Si la nouvelle position est plus éloignée
+  du centre des relevés que le rayon du lieu, **le rayon est augmenté automatiquement** 
+  (la confirmation l'indique) : sinon les relevés ne seraient plus rattachés au nom et 
+  le lieu redeviendrait « Non nommé ». Un lieu non nommé n'a pas de position enregistrée : le nommer d'abord.
+- **Adresse (OSM)** : interroge le service Nominatim d'OpenStreetMap pour afficher
+  l'adresse approximative du lieu sélectionné, afin d'aider à le nommer. Requête lancée uniquement au clic
+  (les coordonnées du lieu sont envoyées à OpenStreetMap), en tâche de fond pour ne pas bloquer l'interface,
+  résultat mis en cache pendant la session.
+
+**Fichier `lieux.json`**
+
+```json
+[
+  {"nom": "Domicile", "lat": 49.18295, "lon": -0.37065, "rayon": 100},
+  {"nom": "Bureau",   "lat": 49.2050,  "lon": -0.3505,  "rayon": 150}
+]
+```
+
+Un lieu calculé prend le nom de l'entrée la plus proche dont le rayon (en m) contient son centre. 
+Le fichier est relu à chaque rafraîchissement : il peut être édité à la main. Il est écrit de façon atomique. 
+S'il est illisible (JSON invalide), il est ignoré : **en faire une copie de sauvegarde** avant de l'éditer,
+car le prochain nommage le réécrirait. Il n'est pas concerné par les boutons « Effacer » des autres onglets.
+
+**Quand l'onglet se met à jour** : au premier affichage, puis à nouveau à l'ouverture suivante après un 
+rafraîchissement ou un effacement des positions depuis l'onglet Carte. Sinon, utiliser **Rafraîchir** ou **Appliquer**.
+
+### Réglages Freq. Datas (S23) — accessible depuis tous les onglets
+
+Calculateur d'intervalle de collecte, quatre modes au choix :
+- toutes les **X minutes** (minimum 15, limite Android),
+- **X fois par jour**,
+- **X fois par semaine**,
+- **X fois par mois** (approximé à 30 jours).
+
+Génère la commande `termux-job-scheduler` complète à reporter dans Termux, avec un bouton **Copier** pour la mettre 
+directement dans le presse-papiers. Cette fenêtre ne modifie rien sur le téléphone — c'est un calculateur, la
+commande doit toujours être exécutée manuellement dans Termux (ou copiée puis collée dans une session SSH vers le S23).
+
+Pas de rafraîchissement automatique : utiliser le bouton « Rafraîchir » ou « Appliquer » pour recharger les dernières
+données (l'onglet Lieux se recalcule aussi à l'ouverture, voir plus haut).
+
+## Fiabilité de la connexion sur de longues périodes d'inactivité
+
+Sur un réseau mobile, un tunnel WireGuard resté inactif plusieurs heures (ex. la nuit, téléphone immobile) peut voir
+sa correspondance NAT fermée côté opérateur, sans que WireGuard ne le détecte automatiquement. La condition 
+`--network any` du job-scheduler limite ce risque (Android attend qu'une connectivité soit rapportée comme disponible
+avant de déclencher le job), mais ne garantit pas que le tunnel WireGuard lui-même soit encore ouvert.
+
+**Diagnostic :**
+```bash
+sudo wg show   # sur le Pi5 : regarder "latest handshake" pour le peer S23
+sudo journalctl -u geoloc-serveur.service --since "<date>" --until "<date>"
+```
+Si le Pi5 tourne sans interruption (`uptime`) mais que le handshake date d'avant les erreurs, la coupure vient du S23, pas du Pi5.
+
+L'onglet **Lieux** du Tracker chiffre ces coupures : la ligne de synthèse indique le temps de « trous de données » 
+(intervalles plus longs que l'écart max) sur la période analysée, ce qui permet de mesurer l'effet d'un changement de réglage 
+(fréquence,`PersistentKeepalive`).
+
+Depuis octobre 2026, une coupure de tunnel ou un redémarrage du Pi5 (ou de la box) ne fait plus perdre de données : voir
+§ Fiabilité de l'envoi. Après un redémarrage du Pi5, vérifier tout de même que `wg-quick@wg0` est remonté
+(`sudo wg show`), sinon les nouveaux essais échoueront jusqu'à l'abandon (la file d'attente est conservée).
+
+**Options possibles (compromis autonomie vs continuité des données) :**
+- Activer `PersistentKeepalive = 25` (ou une valeur plus espacée, ex. `120`)
+  dans la configuration WireGuard du S23 — maintient le tunnel ouvert en
+  continu, au prix d'une légère consommation batterie supplémentaire.
+- Réduire la fréquence de collecte (voir « Réglages Freq. Datas ») et
+  accepter l'absence de données pendant les longues périodes d'inactivité
+  si le suivi nocturne n'est pas essentiel — c'est le choix retenu par
+  défaut dans ce projet (8h entre chaque collecte, sans keepalive
+  permanent).
+
+## Dépannage rapide
+
+| Symptôme                                                              | Cause probable                                                                                                                                                                                                                                        |
+|---                                                                    |---                                                                                                                                                                                                                                                    |
+| `Erreur : position introuvable — network : délai dépassé …`           | Aucun fix récent ; le dernier recours envoie la dernière position connue. Si la sonde en fin de ligne indique `délai dépassé`, c'est Termux:API qui est bloquée (cause non élucidée) : un nouvel essai est planifié 15 min plus tard                  |
+| `envoi impossible : ConnectTimeout après 3 essai(s) …`                | Pi5 ou tunnel WireGuard injoignable (Pi5/box redémarrés, tunnel coupé). Rien n'est perdu : la position est en attente et part dès que la liaison revient. Vérifier `sudo wg show` et `systemctl status geoloc-serveur`                                |
+| `nouvel essai NON planifié`                                           | `termux-job-scheduler` n'a pas répondu (Termux:API bloquée) : pas de nouvel essai avant le créneau de 8 h                                                                                                                                             |
+| `Ignoré : un autre envoi est déjà en cours`                           | Deux déclenchements simultanés (créneau de 8 h et nouvel essai) : normal, le second se désiste                                                                                                                                                        |
+| Points gris / étoile `*` dans le Tracker                              | Position ancienne (dernière position connue, voir § Localisation) : normal la nuit, ce n'est pas un défaut                                                                                                                                            |
+| Le Tracker n'affiche plus aucune télémétrie après une mise à jour     | `COLONNES_TELEMETRIE` différent entre `serveur_geoloc.py` et `Tracker_S23.py` : les lignes au mauvais nombre de colonnes sont ignorées                                                                                                                |
+| `termux-location` timeout                                             | Permission de localisation de Termux:API pas réglée sur « Tout le temps », ou optimisation batterie active                                                                                                                                            |
+| `Cannot execute file` au lancement du job                             | Script pas rendu exécutable (`chmod +x`), ou shebang absent/incorrect (`#!/data/data/com.termux/files/usr/bin/python3`)                                                                                                                               |
+| `getopt: unrecognized option` sur `termux-job-scheduler`              | Flag invalide — c'est `--network` (pas `--network-type`)                                                                                                                                                                                              |
+| Le script semble ne rien faire (code de sortie 0, log inchangé)       | Fichier tronqué par un collage `nano` incomplet — vérifier avec `wc -l ~/envoyer_position.py` (~390 lignes attendues), privilégier le téléchargement du fichier plutôt que le copier-coller                                                           |
+| `termux-sensor -s "..."` renvoie `{}`                                 | Nom de capteur incorrect ou sensible à la casse — lister les capteurs disponibles avec `termux-sensor -l` et ajuster le nom exact dans `envoyer_position.py`                                                                                          |
+| Champ `type_reseau` toujours vide en télémétrie                       | Vérifier que la permission Téléphone est accordée à Termux:API, et que le script utilise bien la clé `network_type` (pas `data_network_type`) du JSON de `termux-telephony-deviceinfo`                                                                |
+| Connexion refusée / timeout côté S23                                  | Tunnel WireGuard non actif sur le S23 au moment de l'envoi                                                                                                                                                                                            |
+| `Connection timed out` après plusieurs heures OK                      | NAT mobile ayant fermé le tunnel WireGuard inactif — voir section « Fiabilité de la connexion » ci-dessus                                                                                                                                             |
+| Le Pi5 ne reçoit rien alors que le S23 envoie bien                    | Vérifier que `geoloc-serveur.service` est actif (`systemctl status`), et que l'IP dans les deux scripts correspond bien à l'IP `wg0` du Pi5                                                                                                           |
+| Un lieu affiche « Non nommé » alors qu'il a été nommé                 | Le centre calculé des relevés est hors du rayon du lieu enregistré dans `lieux.json` (GPS imprécis, rayon d'analyse modifié) — augmenter `rayon` dans le fichier, ou déplacer le lieu depuis l'onglet Lieux (le rayon s'adapte alors automatiquement) |
+| « Adresse indisponible : HTTP Error 403 » (bouton Adresse (OSM))      | Le Pi5 n'a pas d'accès Internet, ou un proxy/pare-feu bloque `nominatim.openstreetmap.org` — la fonction est facultative, le reste de l'onglet n'en dépend pas                                                                                        |
+| Tous les noms de lieux ont disparu                                    | `lieux.json` illisible (JSON invalide après une édition manuelle) : il est alors ignoré — le corriger ou restaurer la sauvegarde                                                                                                                      |
+| `> ~/geoloc.log` renvoie "Permission denied"                          | Vérifier que le `>` est bien tapé avant le chemin (sans lui, le shell essaie d'exécuter le fichier au lieu de le vider)                                                                                                                               |
+
+## Structure du projet
+
+```
+GeolocS23/
+├── serveur_geoloc.py          # serveur Flask sur le Pi5
+├── Tracker_S23.py             # interface Tkinter (onglets Carte + Télémétrie + Lieux)
+├── positions.log              # historique des positions (horodatage,lat,lon)
+├── telemetrie.log             # historique de la télémétrie (horodatage,vitesse,...,position_ancienne,age_position_s)
+├── *.log.bak_AAAAMMJJ_HHMMSS  # archives créées par les boutons « Effacer » (10 conservées par fichier)
+├── lieux.json                 # lieux nommés (nom, lat, lon, rayon) — créé par l'onglet Lieux
+├── icons/
+│   └── gps-phone.png
+└── geoloc-serveur.service     # unité systemd (à copier dans /etc/systemd/system/)
+```
+
+Côté S23, dans Termux (`~/`) :
+
+```
+~/
+├── envoyer_position.py        # script one-shot (collecte + envoi + file d'attente + nouvel essai)
+├── geoloc.log                 # journal des envois
+├── geoloc_attente.json        # positions non envoyées (un JSON par ligne) — absent quand tout est parti
+├── geoloc_retry.count         # nombre d'échecs consécutifs (nouvel essai, max 8)
+├── geoloc.lock                # verrou anti-envois simultanés
+├── sonde_api.py               # sonde de diagnostic (facultatif, job 2)
+└── sonde_api.log              # journal de la sonde
+```
+
+Jobs `termux-job-scheduler` : `1001` (créneau régulier de 8 h), `1002` (nouvel essai, temporaire), `2` (sonde, facultatif).
+Voir `ConfigS23.txt` pour la liste des commandes utiles.
+
+## Auteur
+**Jean-François Brunet** — [JFBConseils](https://github.com/JeanFrancoisBrunet)
+Consultant Lean Management — projet personnel sur Raspberry Pi 5 *Octobre 2026*
