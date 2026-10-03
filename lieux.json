@@ -1,0 +1,20 @@
+[
+  {
+    "nom": "Domicile",
+    "lat": 49.135534,
+    "lon": -0.473145,
+    "rayon": 100.0
+  },
+  {
+    "nom": "IMV Technologies",
+    "lat": 48.741752,
+    "lon": 0.643939,
+    "rayon": 100.0
+  },
+  {
+    "nom": "Studio l'Aigle",
+    "lat": 48.766273,
+    "lon": 0.626759,
+    "rayon": 100
+  }
+]
