@@ -16,6 +16,7 @@ COLONNES_TELEMETRIE = [
     "luminosite_lux",
     "wifi_ssid", "wifi_rssi",
     "operateur", "type_reseau",
+    "position_ancienne", "age_position_s",   # dernière position connue (fix ancien) et son âge en secondes
 ]
 
 FORMAT_HORODATAGE = "%Y-%m-%d %H:%M:%S"

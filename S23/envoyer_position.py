@@ -13,8 +13,13 @@
 #   - si le Pi5 reste injoignable (tunnel coupé, Pi5 redémarré...), la position est gardée dans
 #     ~/geoloc_attente.json avec son heure réelle et renvoyée au passage suivant, avant la nouvelle ;
 #   - après un échec (position introuvable ou envoi impossible), un nouvel essai est planifié
-#     15 minutes plus tard (job 1002), jusqu'à 8 essais, puis abandon jusqu'au créneau de 8 h ;
-#     il est annulé dès qu'un cycle réussit.
+#     (job 1002, période 15 min), jusqu'à 8 essais, puis abandon jusqu'au créneau de 8 h ;
+#     il est annulé dès qu'un cycle réussit. Android lance un job périodique IMMÉDIATEMENT quand on
+#     le (re)planifie : ce premier déclenchement est ignoré tant que l'échec date de moins de 10 min
+#     (sauf lancement manuel depuis un terminal), de sorte que les essais sont réellement espacés ;
+#   - la « dernière position connue » est demandée AVANT les tentatives de fix récent : c'est la
+#     demande de fix récent qui semble bloquer Termux:API, la position de secours est donc déjà en
+#     poche quand le blocage survient ; elle n'est envoyée que si aucun fix récent n'a pu être obtenu.
 #
 #  Auteur : Jean-François BRUNET – JFBConseils – Octobre 2026
 # =============================================================================
@@ -22,6 +27,7 @@
 import fcntl
 import os
 import subprocess
+import sys
 import json
 import time
 from datetime import datetime
@@ -34,6 +40,7 @@ FICHIER_LOG = os.path.join(RACINE, "geoloc.log")
 FICHIER_ATTENTE = os.path.join(RACINE, "geoloc_attente.json")   # positions non envoyées, une par ligne (JSON)
 FICHIER_COMPTEUR = os.path.join(RACINE, "geoloc_retry.count")   # échecs consécutifs depuis le dernier succès
 FICHIER_VERROU = os.path.join(RACINE, "geoloc.lock")            # évite deux envois simultanés
+FICHIER_ECHEC = os.path.join(RACINE, "geoloc_dernier_echec")    # heure (epoch, secondes) du dernier échec
 SCRIPT = os.path.join(RACINE, "envoyer_position.py")
 FORMAT_HORODATAGE = "%Y-%m-%d %H:%M:%S"
 
@@ -42,18 +49,20 @@ PAUSE_ENTRE_ESSAIS = 15     # secondes entre deux tentatives d'envoi
 MAX_ATTENTE = 100           # positions gardées au maximum en attente (les plus anciennes sont abandonnées)
 ID_JOB_RETRY = 1002         # job termux-job-scheduler de nouvel essai (1001 = créneau régulier de 8 h)
 DELAI_RETRY_MS = 15 * 60 * 1000   # 15 min : minimum accepté par Android pour un job périodique
-MAX_RETRY = 8               # 8 essais x 15 min = 2 h, puis on attend le créneau suivant
+MAX_RETRY = 8               # 8 essais espacés d'environ 15 min (2 h ou plus), puis on attend le créneau suivant
+DELAI_MINI_NOUVEL_ESSAI = 10 * 60   # secondes : un déclenchement plus proche de l'échec précédent est ignoré
 
-# Tentatives de localisation, essayées dans l'ordre jusqu'à la première qui réussit :
-# (nom affiché dans le log, fournisseur termux-location, délai maximum en secondes, mode).
-# mode "once" = nouveau fix ; mode "last" = dernière position connue du système
-# (réponse quasi immédiate, mais peut être ancienne).
-# Durée maximale cumulée si tout échoue : 40 + 40 + 30 + 10 = 120 s.
+# Position de secours : dernière position connue du système (réponse quasi immédiate, peut être ancienne).
+# Demandée EN PREMIER, quand Termux:API répond encore, puis utilisée seulement si aucun fix récent n'arrive.
+POSITION_DE_SECOURS = ("dernière position connue", "network", 10, "last")
+
+# Tentatives de fix récent, essayées dans l'ordre jusqu'à la première qui réussit :
+# (nom affiché dans le log, fournisseur termux-location, délai maximum en secondes, mode "once").
+# Durée maximale cumulée si tout échoue : 10 (secours) + 40 + 40 + 30 = 120 s.
 TENTATIVES_POSITION = [
     ("network", "network", 40, "once"),
     ("gps", "gps", 40, "once"),
     ("network (2e essai)", "network", 30, "once"),
-    ("dernière position connue", "network", 10, "last"),
 ]
 
 def lancer_termux(commande, timeout=10):
@@ -83,35 +92,55 @@ def executer_termux(commande, timeout=10):
     data, _ = lancer_termux(commande, timeout)
     return data
 
+def position_valide(data):
+    return isinstance(data, dict) and "latitude" in data and "longitude" in data
+
+def construire_position(data, ancienne):
+    """Dictionnaire envoyé au serveur. Pour une position ancienne (dernière position connue), la vitesse est
+    forcée à 0 (elle n'est plus d'actualité) et position_ancienne / age_position_s sont ajoutés."""
+    vitesse_ms = 0.0 if ancienne else (data.get("speed") or 0.0)
+    position = {
+        "latitude": data["latitude"],
+        "longitude": data["longitude"],
+        "vitesse_kmh": round(vitesse_ms * 3.6, 1),
+    }
+    if ancienne:
+        position["position_ancienne"] = True
+        age_ms = data.get("elapsedMs")
+        if isinstance(age_ms, (int, float)):
+            position["age_position_s"] = int(age_ms / 1000)
+    return position
+
 def obtenir_position():
     """Position + vitesse (le champ 'speed', en m/s, vient directement de termux-location).
     Renvoie (position, note). 'note' décrit les tentatives échouées quand la 1re n'a pas suffi
     (chaîne vide si tout s'est bien passé). Lève RuntimeError, avec le motif de chaque échec,
-    si aucune tentative ne réussit.
-    Si seule la dernière position connue est disponible, 'position' contient en plus
-    position_ancienne=True et, si termux le fournit, age_position_s (âge du fix en secondes) ;
-    la vitesse est alors forcée à 0 car elle n'est plus d'actualité."""
+    si aucune tentative ne réussit et qu'il n'y a pas de position de secours.
+    La dernière position connue est demandée d'abord (Termux:API répond encore à ce moment-là) ; elle ne
+    sert que si aucun fix récent n'est obtenu, et contient alors position_ancienne=True et, si termux le
+    fournit, age_position_s (âge du fix en secondes)."""
     echecs = []
+    nom, fournisseur, delai, mode = POSITION_DE_SECOURS
+    data, motif = lancer_termux(["termux-location", "-p", fournisseur, "-r", mode], timeout=delai)
+    secours = None
+    if motif is None and position_valide(data):
+        secours = construire_position(data, ancienne=True)
+    else:
+        echecs.append(f"{nom} : {motif or 'réponse sans coordonnées : ' + str(data)[:80]}")
+
     for nom, fournisseur, delai, mode in TENTATIVES_POSITION:
         data, motif = lancer_termux(["termux-location", "-p", fournisseur, "-r", mode], timeout=delai)
-        if motif is None and not (isinstance(data, dict) and "latitude" in data and "longitude" in data):
+        if motif is None and not position_valide(data):
             motif = f"réponse sans coordonnées : {str(data)[:80]}"
         if motif is None:
-            ancienne = (mode == "last")
-            vitesse_ms = 0.0 if ancienne else (data.get("speed") or 0.0)
-            position = {
-                "latitude": data["latitude"],
-                "longitude": data["longitude"],
-                "vitesse_kmh": round(vitesse_ms * 3.6, 1),
-            }
-            if ancienne:
-                position["position_ancienne"] = True
-                age_ms = data.get("elapsedMs")
-                if isinstance(age_ms, (int, float)):
-                    position["age_position_s"] = int(age_ms / 1000)
-            note = f"via {nom} après échec de " + " ; ".join(echecs) if echecs else ""
-            return position, note
+            echecs_recents = [e for e in echecs if not e.startswith(POSITION_DE_SECOURS[0])]
+            note = f"via {nom} après échec de " + " ; ".join(echecs_recents) if echecs_recents else ""
+            return construire_position(data, ancienne=False), note
         echecs.append(f"{nom} : {motif}")
+
+    echecs_recents = [e for e in echecs if not e.startswith(POSITION_DE_SECOURS[0])]
+    if secours is not None:
+        return secours, f"via {POSITION_DE_SECOURS[0]} après échec de " + " ; ".join(echecs_recents)
     raise RuntimeError("position introuvable — " + " | ".join(echecs))
 
 def sonder_api_termux():
@@ -288,6 +317,43 @@ def lancer_job(commande):
         return False
     return resultat.returncode == 0
 
+def ecrire_heure_echec():
+    with open(FICHIER_ECHEC, "w") as f:
+        f.write(str(time.time()))
+
+def effacer_heure_echec():
+    try:
+        os.remove(FICHIER_ECHEC)
+    except FileNotFoundError:
+        pass
+
+def trop_tot_pour_un_nouvel_essai():
+    """Android lance un job périodique dès qu'il est (re)planifié. Ce déclenchement immédiat est ignoré si un
+    nouvel essai est en cours et que l'échec précédent date de moins de DELAI_MINI_NOUVEL_ESSAI secondes.
+    Un lancement depuis un terminal (envoi manuel) n'est jamais ignoré. Renvoie l'écart en secondes, ou None."""
+    try:
+        if sys.stdin is not None and sys.stdin.isatty():
+            return None
+    except (OSError, ValueError):
+        pass
+    if lire_compteur() == 0:
+        return None
+    try:
+        with open(FICHIER_ECHEC) as f:
+            ecart = time.time() - float(f.read().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+    return ecart if 0 <= ecart < DELAI_MINI_NOUVEL_ESSAI else None
+
+def nouvel_essai_deja_planifie():
+    """True si le job 1002 figure déjà dans la liste du planificateur (inutile de le replanifier : cela
+    provoquerait un déclenchement immédiat de plus et décalerait sa période)."""
+    try:
+        resultat = subprocess.run(["termux-job-scheduler", "--pending"], capture_output=True, text=True, timeout=15)
+    except Exception:
+        return False
+    return resultat.returncode == 0 and f"Job {ID_JOB_RETRY}:" in resultat.stdout
+
 def planifier_nouvel_essai():
     return lancer_job([
         "termux-job-scheduler", "--job-id", str(ID_JOB_RETRY), "--script", SCRIPT,
@@ -305,22 +371,31 @@ def gerer_nouvel_essai(probleme):
     if not probleme:
         if echecs:
             ecrire_compteur(0)
+            effacer_heure_echec()
             annuler_nouvel_essai()
         return ""
     echecs += 1
     if echecs > MAX_RETRY:
         ecrire_compteur(0)
+        effacer_heure_echec()
         annuler_nouvel_essai()
         return f"abandon après {MAX_RETRY} nouveaux essais, prochain essai au créneau de 8 h"
     ecrire_compteur(echecs)
-    if planifier_nouvel_essai():
-        return f"nouvel essai dans 15 min ({echecs}/{MAX_RETRY})"
+    ecrire_heure_echec()  # AVANT la planification : le déclenchement immédiat qui suit doit voir cette heure
+    if nouvel_essai_deja_planifie() or planifier_nouvel_essai():
+        return f"nouvel essai dans ~15 min ({echecs}/{MAX_RETRY})"
     return "nouvel essai NON planifié (termux-job-scheduler n'a pas répondu)"
 
 def main():
     # Horodatage pris au DÉBUT du cycle : il indique l'heure de déclenchement, pas celle de la fin
     # (un cycle qui enchaîne plusieurs tentatives de localisation peut durer 2 minutes).
     horodatage = datetime.now().strftime(FORMAT_HORODATAGE)
+
+    trop_tot = trop_tot_pour_un_nouvel_essai()
+    if trop_tot is not None:
+        ecrire_log(f"[{horodatage}] Ignoré : nouvel essai trop tôt (échec il y a {int(trop_tot)} s, "
+                   f"délai minimal {DELAI_MINI_NOUVEL_ESSAI // 60} min)\n")
+        return
 
     verrou = open(FICHIER_VERROU, "w")
     try:
