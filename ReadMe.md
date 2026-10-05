@@ -18,8 +18,8 @@ détection des **lieux fréquentés** et du temps passé dans chacun.
                                       Carte + Télémétrie + Lieux)
 ```
 
-Le téléphone n'a besoin d'aucune connexion Wi-Fi partagée avec le Pi5 : le
-tunnel WireGuard fonctionne aussi bien à la maison qu'en 4G/5G en mobilité.
+Le téléphone n'a besoin d'aucune connexion Wi-Fi partagée avec le Pi5 : 
+le tunnel WireGuard fonctionne aussi bien à la maison qu'en 4G/5G en mobilité.
 
 `envoyer_position.py` est un script **one-shot** (il collecte, envoie, puis se termine) 
 déclenché toutes les X heures par `termux-job-scheduler`, l'API de planification d'Android. 
@@ -57,7 +57,7 @@ environ 15 minutes plus tard (voir § Fiabilité de l'envoi).
 ```bash
 mkdir -p ~/Projects/GeolocS23
 cd ~/Projects/GeolocS23
-# copier serveur_geoloc.py, Tracker_S23.py, et le dossier icons/ ici
+# copier serveur_geoloc.py, Tracker_S23.py, et le dossier icons/ 
 # (lieux.json sera créé automatiquement par le Tracker au premier lieu nommé)
 ```
 
@@ -161,7 +161,7 @@ termux-job-scheduler --job-id 1001 --script ~/envoyer_position.py \
 ```
 - `--job-id 1001` : identifiant du job ; relancer la commande avec le même id remplace le job existant plutôt que d'en créer un doublon.
 - `--period-ms` : intervalle en millisecondes (28 800 000 = 8h). Minimum accepté par Android : 900 000 ms (15 min). 
-  Android choisit un moment approximatif dans une fenêtre autour de cette période — ne pas s'attendre à un déclenchement pile à l'heure.
+     Android choisit un moment approximatif dans une fenêtre autour de cette période — ne pas s'attendre à un déclenchement pile à l'heure.
 - `--network any` : le job attend qu'une connexion réseau soit disponible avant de s'exécuter (Wi-Fi ou données mobiles).
 - `--persisted true` : le job survit à un redémarrage du téléphone.
 - `--battery-not-low true` : le job ne démarre pas quand la batterie est faible.
@@ -217,9 +217,7 @@ Purge périodique des logs sur le S23 (à faire de temps en temps, pas de rotati
 
 ## Télémétrie collectée
 
-En plus de la position GPS, chaque envoi tente de récupérer (chaque source
-est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la
-position) :
+En plus de la position GPS, chaque envoi tente de récupérer (chaque source est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la position) :
 
 | Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                                                                                              |
 |---            |---                                                   |---                                                                                                                                                                                                                                    |
@@ -280,8 +278,11 @@ Trois mécanismes évitent de perdre des points quand le Pi5 ou la position sont
    (période de 15 min, le minimum Android), qui relance le même script. Android lance toutefois un job périodique
    **immédiatement** quand il est (re)planifié (constaté : sans protection, les 8 essais se succédaient toutes les 2 minutes
    et étaient épuisés en 17 minutes). Ce déclenchement immédiat est donc **ignoré** tant que l'échec date de moins de 10 minutes
-   (`Ignoré : nouvel essai trop tôt`) ; les essais visent ainsi un espacement d'environ 15 minutes (Android choisit le moment
-   dans une fenêtre : l'écart réel peut être plus long). Un lancement manuel depuis un terminal n'est jamais ignoré.
+   (`Ignoré : nouvel essai trop tôt`) ; les essais visent ainsi un espacement d'environ 15 minutes. Android choisit le moment
+   dans une fenêtre : l'écart réel mesuré est de **14 à 24 minutes**. Exemple constaté le 5 octobre (trajet sans données mobiles) :
+   premier échec à 06:28, essais à 06:45, 06:59, 07:20 et 07:43, puis envoi réussi à 07:59 des 5 positions en attente
+   (renvoyées avec leur heure réelle de collecte, vérifié dans `positions.log` du Pi5). Les déclenchements immédiats de
+   06:29 et 07:47 ont été ignorés par la protection. Un lancement manuel depuis un terminal n'est jamais ignoré.
    Le job n'est planifié qu'une fois, puis replanifié seulement s'il a disparu de `termux-job-scheduler --pending`.
    Le compteur `~/geoloc_retry.count` limite à **8 essais** (2 h au moins) : ensuite le job est annulé et l'on attend le créneau
    régulier de 8 h. Dès qu'un cycle réussit, le compteur est remis à 0 (le fichier reste, avec la valeur 0) et le job `1002` annulé.
@@ -498,29 +499,29 @@ Depuis octobre 2026, une coupure de tunnel ou un redémarrage du Pi5 (ou de la b
 
 ## Dépannage rapide
 
-| Symptôme                                                                     | Cause probable                                                                                                                                                                                                                                        |
-|---                                                                           |---                                                                                                                                                                                                                                                    |
-| `Erreur : position introuvable — dernière position connue : … \ network : …` | Ni fix récent ni position de secours (cache vide, ou Termux:API bloquée : voir la sonde en fin de ligne, `délai dépassé` = Termux:API bloquée, cause non élucidée). Un nouvel essai est planifié environ 15 min plus tard                             |
-| `Envoyé (position via dernière position connue après échec de …)`            | Aucun fix récent, la position de secours a été envoyée (marquée ancienne dans le Tracker). Succès : pas de nouvel essai                                                                                                                               |
-| `Ignoré : nouvel essai trop tôt …`                                           | Déclenchement immédiat d'Android après la planification du job `1002` : normal, un seul par échec                                                                                                                                                     |
-| `envoi impossible : ConnectTimeout après 3 essai(s) …`                       | Pi5 ou tunnel WireGuard injoignable (Pi5/box redémarrés, tunnel coupé). Rien n'est perdu : la position est en attente et part dès que la liaison revient. Vérifier `sudo wg show` et `systemctl status geoloc-serveur`                                |
-| `nouvel essai NON planifié`                                                  | `termux-job-scheduler` n'a pas répondu (Termux:API bloquée) : pas de nouvel essai avant le créneau de 8 h                                                                                                                                             |
-| `Ignoré : un autre envoi est déjà en cours`                                  | Deux déclenchements simultanés (créneau de 8 h et nouvel essai) : normal, le second se désiste                                                                                                                                                        |
-| Points gris / étoile `*` dans le Tracker                                     | Position ancienne (dernière position connue, voir § Localisation) : normal la nuit, ce n'est pas un défaut                                                                                                                                            |
-| Le Tracker n'affiche plus aucune télémétrie après une mise à jour            | `COLONNES_TELEMETRIE` différent entre `serveur_geoloc.py` et `Tracker_S23.py` : les lignes au mauvais nombre de colonnes sont ignorées                                                                                                                |
-| `termux-location` timeout                                                    | Permission de localisation de Termux:API pas réglée sur « Tout le temps », ou optimisation batterie active                                                                                                                                            |
-| `Cannot execute file` au lancement du job                                    | Script pas rendu exécutable (`chmod +x`), ou shebang absent/incorrect (`#!/data/data/com.termux/files/usr/bin/python3`)                                                                                                                               |
-| `getopt: unrecognized option` sur `termux-job-scheduler`                     | Flag invalide — c'est `--network` (pas `--network-type`)                                                                                                                                                                                              |
-| Le script semble ne rien faire (code de sortie 0, log inchangé)              | Fichier tronqué par un collage `nano` incomplet — vérifier avec `wc -l ~/envoyer_position.py` (~470 lignes attendues), privilégier le téléchargement du fichier plutôt que le copier-coller                                                           |
-| `termux-sensor -s "..."` renvoie `{}`                                        | Nom de capteur incorrect ou sensible à la casse — lister les capteurs disponibles avec `termux-sensor -l` et ajuster le nom exact dans `envoyer_position.py`                                                                                          |
-| Champ `type_reseau` toujours vide en télémétrie                              | Vérifier que la permission Téléphone est accordée à Termux:API, et que le script utilise bien la clé `network_type` (pas `data_network_type`) du JSON de `termux-telephony-deviceinfo`                                                                |
-| Connexion refusée / timeout côté S23                                         | Tunnel WireGuard non actif sur le S23 au moment de l'envoi                                                                                                                                                                                            |
-| `Connection timed out` après plusieurs heures OK                             | NAT mobile ayant fermé le tunnel WireGuard inactif — voir section « Fiabilité de la connexion » ci-dessus                                                                                                                                             |
-| Le Pi5 ne reçoit rien alors que le S23 envoie bien                           | Vérifier que `geoloc-serveur.service` est actif (`systemctl status`), et que l'IP dans les deux scripts correspond bien à l'IP `wg0` du Pi5                                                                                                           |
-| Un lieu affiche « Non nommé » alors qu'il a été nommé                        | Le centre calculé des relevés est hors du rayon du lieu enregistré dans `lieux.json` (GPS imprécis, rayon d'analyse modifié) — augmenter `rayon` dans le fichier, ou déplacer le lieu depuis l'onglet Lieux (le rayon s'adapte alors automatiquement) |
-| « Adresse indisponible : HTTP Error 403 » (bouton Adresse (OSM))             | Le Pi5 n'a pas d'accès Internet, ou un proxy/pare-feu bloque `nominatim.openstreetmap.org` — la fonction est facultative, le reste de l'onglet n'en dépend pas                                                                                        |
-| Tous les noms de lieux ont disparu                                           | `lieux.json` illisible (JSON invalide après une édition manuelle) : il est alors ignoré — le corriger ou restaurer la sauvegarde                                                                                                                      |
-| `> ~/geoloc.log` renvoie "Permission denied"                                 | Vérifier que le `>` est bien tapé avant le chemin (sans lui, le shell essaie d'exécuter le fichier au lieu de le vider)                                                                                                                               |
+| Symptôme                                                                      | Cause probable                                                                                                                                                                                                                                        |
+|---                                                                            |---                                                                                                                                                                                                                                                    |
+| `Erreur : position introuvable — dernière position connue : … \| network : …` | Ni fix récent ni position de secours (cache vide, ou Termux:API bloquée : voir la sonde en fin de ligne, `délai dépassé` = Termux:API bloquée, cause non élucidée). Un nouvel essai est planifié environ 15 min plus tard                             |
+| `Envoyé (position via dernière position connue après échec de …)`             | Aucun fix récent, la position de secours a été envoyée (marquée ancienne dans le Tracker). Succès : pas de nouvel essai                                                                                                                               |
+| `Ignoré : nouvel essai trop tôt …`                                            | Déclenchement immédiat d'Android après la planification du job `1002` : normal, un seul par échec                                                                                                                                                     |
+| `envoi impossible : ConnectTimeout après 3 essai(s) …`                        | Pi5 ou tunnel WireGuard injoignable (Pi5/box redémarrés, tunnel coupé). Rien n'est perdu : la position est en attente et part dès que la liaison revient. Vérifier `sudo wg show` et `systemctl status geoloc-serveur`                                |
+| `nouvel essai NON planifié`                                                   | `termux-job-scheduler` n'a pas répondu (Termux:API bloquée) : pas de nouvel essai avant le créneau de 8 h                                                                                                                                             |
+| `Ignoré : un autre envoi est déjà en cours`                                   | Deux déclenchements simultanés (créneau de 8 h et nouvel essai) : normal, le second se désiste                                                                                                                                                        |
+| Points gris / étoile `*` dans le Tracker                                      | Position ancienne (dernière position connue, voir § Localisation) : normal la nuit, ce n'est pas un défaut                                                                                                                                            |
+| Le Tracker n'affiche plus aucune télémétrie après une mise à jour             | `COLONNES_TELEMETRIE` différent entre `serveur_geoloc.py` et `Tracker_S23.py` : les lignes au mauvais nombre de colonnes sont ignorées                                                                                                                |
+| `termux-location` timeout                                                     | Permission de localisation de Termux:API pas réglée sur « Tout le temps », ou optimisation batterie active                                                                                                                                            |
+| `Cannot execute file` au lancement du job                                     | Script pas rendu exécutable (`chmod +x`), ou shebang absent/incorrect (`#!/data/data/com.termux/files/usr/bin/python3`)                                                                                                                               |
+| `getopt: unrecognized option` sur `termux-job-scheduler`                      | Flag invalide — c'est `--network` (pas `--network-type`)                                                                                                                                                                                              |
+| Le script semble ne rien faire (code de sortie 0, log inchangé)               | Fichier tronqué par un collage `nano` incomplet — vérifier avec `wc -l ~/envoyer_position.py` (~470 lignes attendues), privilégier le téléchargement du fichier plutôt que le copier-coller                                                           |
+| `termux-sensor -s "..."` renvoie `{}`                                         | Nom de capteur incorrect ou sensible à la casse — lister les capteurs disponibles avec `termux-sensor -l` et ajuster le nom exact dans `envoyer_position.py`                                                                                          |
+| Champ `type_reseau` toujours vide en télémétrie                               | Vérifier que la permission Téléphone est accordée à Termux:API, et que le script utilise bien la clé `network_type` (pas `data_network_type`) du JSON de `termux-telephony-deviceinfo`                                                                |
+| Connexion refusée / timeout côté S23                                          | Tunnel WireGuard non actif sur le S23 au moment de l'envoi                                                                                                                                                                                            |
+| `Connection timed out` après plusieurs heures OK                              | NAT mobile ayant fermé le tunnel WireGuard inactif — voir section « Fiabilité de la connexion » ci-dessus                                                                                                                                             |
+| Le Pi5 ne reçoit rien alors que le S23 envoie bien                            | Vérifier que `geoloc-serveur.service` est actif (`systemctl status`), et que l'IP dans les deux scripts correspond bien à l'IP `wg0` du Pi5                                                                                                           |
+| Un lieu affiche « Non nommé » alors qu'il a été nommé                         | Le centre calculé des relevés est hors du rayon du lieu enregistré dans `lieux.json` (GPS imprécis, rayon d'analyse modifié) — augmenter `rayon` dans le fichier, ou déplacer le lieu depuis l'onglet Lieux (le rayon s'adapte alors automatiquement) |
+| « Adresse indisponible : HTTP Error 403 » (bouton Adresse (OSM))              | Le Pi5 n'a pas d'accès Internet, ou un proxy/pare-feu bloque `nominatim.openstreetmap.org` — la fonction est facultative, le reste de l'onglet n'en dépend pas                                                                                        |
+| Tous les noms de lieux ont disparu                                            | `lieux.json` illisible (JSON invalide après une édition manuelle) : il est alors ignoré — le corriger ou restaurer la sauvegarde                                                                                                                      |
+| `> ~/geoloc.log` renvoie "Permission denied"                                  | Vérifier que le `>` est bien tapé avant le chemin (sans lui, le shell essaie d'exécuter le fichier au lieu de le vider)                                                                                                                               |
 
 ## Structure du projet
 
