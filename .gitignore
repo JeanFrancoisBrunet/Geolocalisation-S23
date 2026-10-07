@@ -28,3 +28,6 @@ history.json.lock
 Recherche_immo/*.log
 Scan_emails/*.log
 Timekeeping/*.log
+positions.log*
+telemetrie.log*
+lieux.json
