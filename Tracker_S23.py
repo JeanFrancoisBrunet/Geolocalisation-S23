@@ -166,6 +166,9 @@ def lire_positions():
                 positions.append((horodatage, float(lat), float(lon)))
             except ValueError:
                 continue
+    # Le fichier est écrit dans l'ordre d'ARRIVÉE ; une position rattrapée (envoyée en retard par le S23)
+    # arrive après des positions plus récentes. L'horodatage AAAA-MM-JJ HH:MM:SS se trie comme du texte.
+    positions.sort(key=lambda p: p[0])
     return positions
 
 NB_ARCHIVES_A_CONSERVER = 10  # par fichier (positions et télémétrie comptés séparément)
@@ -235,6 +238,7 @@ def lire_telemetrie():
             if len(champs) != len(COLONNES_TELEMETRIE) + 1:  # +1 pour l'horodatage
                 continue  # ligne mal formée (ancien format, coupure d'écriture...) : ignorée
             entrees.append(tuple(champs))
+    entrees.sort(key=lambda e: e[0])  # ordre chronologique (voir lire_positions : les rattrapages arrivent en retard)
     return entrees
 
 def effacer_telemetrie():

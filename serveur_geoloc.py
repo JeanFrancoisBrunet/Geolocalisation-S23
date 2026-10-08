@@ -20,17 +20,18 @@ COLONNES_TELEMETRIE = [
 ]
 
 FORMAT_HORODATAGE = "%Y-%m-%d %H:%M:%S"
+SEUIL_RATTRAPAGE_S = 300  # au-delà de 5 min d'écart avec l'heure du Pi5, l'envoi est affiché comme rattrapage
 
 def horodatage_de_l_envoi(data):
     """Heure à écrire dans les logs. Une position gardée en attente par le S23 (Pi5 injoignable)
     arrive avec son heure réelle dans 'horodatage_s23' : on la conserve pour que le Tracker
-    la place au bon moment. Sans ce champ (cas normal), on prend l'heure de réception.
-    Renvoie (horodatage, True si rattrapage)."""
+    la place au bon moment. Le S23 l'envoie désormais pour toute position ; sans ce champ, on prend l'heure de réception.
+    Renvoie (horodatage, True si l'heure du S23 s'écarte de plus de 5 min de celle du Pi5)."""
     brut = data.get("horodatage_s23")
     if brut:
         try:
-            datetime.strptime(str(brut), FORMAT_HORODATAGE)  # on n'écrit jamais un texte qui n'est pas une date
-            return str(brut), True
+            heure_s23 = datetime.strptime(str(brut), FORMAT_HORODATAGE)  # on n'écrit jamais un texte qui n'est pas une date
+            return str(brut), abs((datetime.now() - heure_s23).total_seconds()) > SEUIL_RATTRAPAGE_S
         except ValueError:
             pass
     return datetime.now().strftime(FORMAT_HORODATAGE), False

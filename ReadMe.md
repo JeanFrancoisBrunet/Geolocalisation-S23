@@ -18,8 +18,8 @@ détection des **lieux fréquentés** et du temps passé dans chacun.
                                       Carte + Télémétrie + Lieux)
 ```
 
-Le téléphone n'a besoin d'aucune connexion Wi-Fi partagée avec le Pi5 : 
-le tunnel WireGuard fonctionne aussi bien à la maison qu'en 4G/5G en mobilité.
+Le téléphone n'a besoin d'aucune connexion Wi-Fi partagée avec le Pi5 : le
+tunnel WireGuard fonctionne aussi bien à la maison qu'en 4G/5G en mobilité.
 
 `envoyer_position.py` est un script **one-shot** (il collecte, envoie, puis se termine) 
 déclenché toutes les X heures par `termux-job-scheduler`, l'API de planification d'Android. 
@@ -57,7 +57,7 @@ environ 15 minutes plus tard (voir § Fiabilité de l'envoi).
 ```bash
 mkdir -p ~/Projects/GeolocS23
 cd ~/Projects/GeolocS23
-# copier serveur_geoloc.py, Tracker_S23.py, et le dossier icons/ 
+# copier serveur_geoloc.py, Tracker_S23.py, et le dossier icons/ ici
 # (lieux.json sera créé automatiquement par le Tracker au premier lieu nommé)
 ```
 
@@ -74,9 +74,12 @@ Le serveur enregistre deux fichiers séparés :
   `position_ancienne` / `age_position_s` (voir § Localisation) ; une ligne par envoi, colonnes fixes
   (valeur vide si un capteur a échoué côté S23, jamais de colonne manquante)
 
-Le serveur écrit normalement l'heure de **réception**. 
-Une position gardée en attente par le S23 arrive avec son heure réelle dans le champ `horodatage_s23` (format `AAAA-MM-JJ HH:MM:SS`) : 
-le serveur la conserve, pour que le Tracker place le point au bon moment. Une valeur qui n'est pas une date valide est ignorée (heure de réception utilisée). 
+Chaque position arrive avec l'heure du S23 dans le champ `horodatage_s23` (format `AAAA-MM-JJ HH:MM:SS`) : 
+le serveur la conserve, pour que le Tracker place le point au bon moment, qu'elle parte tout de suite ou après un séjour dans la file d'attente. 
+L'heure du S23 (réseau mobile) est plus fiable que celle du Pi5, dont l'horloge peut être fausse juste après un redémarrage (constaté le 7 octobre :
+Pi5 éteint puis rallumé, horloge restée à l'heure de l'arrêt le temps de la synchronisation). Une valeur qui n'est pas une date valide est ignorée
+(heure de réception utilisée). Les fichiers `.log` sont écrits dans l'ordre d'**arrivée** : une position en retard peut donc y apparaître après des
+positions plus récentes ; le Tracker les trie par horodatage à la lecture. 
 Ce champ n'est pas une colonne de `telemetrie.log` : le format des deux fichiers ne change pas.
 
 La liste `COLONNES_TELEMETRIE` doit être **identique** dans `serveur_geoloc.py` et `Tracker_S23.py`.
@@ -161,7 +164,7 @@ termux-job-scheduler --job-id 1001 --script ~/envoyer_position.py \
 ```
 - `--job-id 1001` : identifiant du job ; relancer la commande avec le même id remplace le job existant plutôt que d'en créer un doublon.
 - `--period-ms` : intervalle en millisecondes (28 800 000 = 8h). Minimum accepté par Android : 900 000 ms (15 min). 
-     Android choisit un moment approximatif dans une fenêtre autour de cette période — ne pas s'attendre à un déclenchement pile à l'heure.
+  Android choisit un moment approximatif dans une fenêtre autour de cette période — ne pas s'attendre à un déclenchement pile à l'heure.
 - `--network any` : le job attend qu'une connexion réseau soit disponible avant de s'exécuter (Wi-Fi ou données mobiles).
 - `--persisted true` : le job survit à un redémarrage du téléphone.
 - `--battery-not-low true` : le job ne démarre pas quand la batterie est faible.
@@ -217,7 +220,9 @@ Purge périodique des logs sur le S23 (à faire de temps en temps, pas de rotati
 
 ## Télémétrie collectée
 
-En plus de la position GPS, chaque envoi tente de récupérer (chaque source est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la position) :
+En plus de la position GPS, chaque envoi tente de récupérer (chaque source
+est indépendante : l'échec d'un capteur n'empêche jamais l'envoi de la
+position) :
 
 | Donnée        | Source Termux:API                                    | Remarque                                                                                                                                                                                                                              |
 |---            |---                                                   |---                                                                                                                                                                                                                                    |
