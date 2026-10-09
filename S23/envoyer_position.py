@@ -41,6 +41,7 @@ FICHIER_ATTENTE = os.path.join(RACINE, "geoloc_attente.json")   # positions non 
 FICHIER_COMPTEUR = os.path.join(RACINE, "geoloc_retry.count")   # échecs consécutifs depuis le dernier succès
 FICHIER_VERROU = os.path.join(RACINE, "geoloc.lock")            # évite deux envois simultanés
 FICHIER_ECHEC = os.path.join(RACINE, "geoloc_dernier_echec")    # heure (epoch, secondes) du dernier échec
+FICHIER_SECOURS = os.path.join(RACINE, "geoloc_secours_envoye")  # présent : une position ancienne a déjà été envoyée pour cet épisode
 SCRIPT = os.path.join(RACINE, "envoyer_position.py")
 FORMAT_HORODATAGE = "%Y-%m-%d %H:%M:%S"
 
@@ -50,6 +51,7 @@ MAX_ATTENTE = 100           # positions gardées au maximum en attente (les plus
 ID_JOB_RETRY = 1002         # job termux-job-scheduler de nouvel essai (1001 = créneau régulier de 8 h)
 DELAI_RETRY_MS = 15 * 60 * 1000   # 15 min : minimum accepté par Android pour un job périodique
 MAX_RETRY = 8               # 8 essais espacés d'environ 15 min (2 h ou plus), puis on attend le créneau suivant
+MAX_RETRY_SECOURS = 3       # si seule la dernière position connue est disponible : 3 nouveaux essais d'une vraie position
 DELAI_MINI_NOUVEL_ESSAI = 10 * 60   # secondes : un déclenchement plus proche de l'échec précédent est ignoré
 
 # Position de secours : dernière position connue du système (réponse quasi immédiate, peut être ancienne).
@@ -364,26 +366,34 @@ def planifier_nouvel_essai():
 def annuler_nouvel_essai():
     return lancer_job(["termux-job-scheduler", "--cancel", "--job-id", str(ID_JOB_RETRY)])
 
-def gerer_nouvel_essai(probleme):
+def retirer_marque_secours():
+    try:
+        os.remove(FICHIER_SECOURS)
+    except FileNotFoundError:
+        pass
+
+def gerer_nouvel_essai(probleme, maximum=MAX_RETRY):
     """Planifie (ou annule) le job de nouvel essai selon le résultat du cycle.
+    'maximum' : nombre de nouveaux essais autorisés (moins nombreux quand seule une position ancienne manque).
     Renvoie un court texte pour le log, ou une chaîne vide s'il n'y a rien à signaler."""
     echecs = lire_compteur()
     if not probleme:
+        retirer_marque_secours()
         if echecs:
             ecrire_compteur(0)
             effacer_heure_echec()
             annuler_nouvel_essai()
         return ""
     echecs += 1
-    if echecs > MAX_RETRY:
+    if echecs > maximum:
         ecrire_compteur(0)
         effacer_heure_echec()
         annuler_nouvel_essai()
-        return f"abandon après {MAX_RETRY} nouveaux essais, prochain essai au créneau de 8 h"
+        return f"abandon après {maximum} nouveaux essais, prochain essai au créneau de 8 h"
     ecrire_compteur(echecs)
     ecrire_heure_echec()  # AVANT la planification : le déclenchement immédiat qui suit doit voir cette heure
     if nouvel_essai_deja_planifie() or planifier_nouvel_essai():
-        return f"nouvel essai dans ~15 min ({echecs}/{MAX_RETRY})"
+        return f"nouvel essai dans ~15 min ({echecs}/{maximum})"
     return "nouvel essai NON planifié (termux-job-scheduler n'a pas répondu)"
 
 def main():
@@ -405,6 +415,7 @@ def main():
         return
 
     attente = lire_attente()
+    en_nouvel_essai = lire_compteur() > 0
 
     # 1. Collecte. Si la position est introuvable, on tente quand même de renvoyer l'attente.
     donnees = None
@@ -416,6 +427,22 @@ def main():
         if isinstance(erreur, RuntimeError):  # position introuvable : on ajoute le diagnostic
             echec_position += f" | {sonder_api_termux()}"
     horodatage_collecte = datetime.now().strftime(FORMAT_HORODATAGE)
+
+    # Position ancienne (dernière position connue) : acceptée une seule fois par épisode. Aux nouveaux essais
+    # suivants, on ne renvoie pas la même position périmée ; on attend une vraie position.
+    secours = donnees is not None and bool(donnees.get("position_ancienne"))
+    secours_deja_envoye = False
+    if secours:
+        secours_deja_envoye = en_nouvel_essai and os.path.exists(FICHIER_SECOURS)
+        if secours_deja_envoye:
+            donnees = None
+        else:
+            with open(FICHIER_SECOURS, "w") as f:
+                f.write(horodatage_collecte)
+    if donnees is not None:
+        # L'heure du S23 (synchronisée par le réseau mobile) est toujours transmise : le Pi5, juste après un
+        # redémarrage, peut avoir une horloge fausse tant que la synchronisation n'est pas faite.
+        donnees.setdefault("horodatage_s23", horodatage_collecte)
 
     # 2. Envoi dans l'ordre chronologique : d'abord l'attente, puis la nouvelle position.
     restants = attente + ([donnees] if donnees is not None else [])
@@ -437,7 +464,7 @@ def main():
 
     # 4. Ligne de log
     rattrapees = min(nb_envoyes, len(attente))
-    if nb_envoyes and echec_envoi is None:
+    if nb_envoyes and echec_envoi is None and not secours_deja_envoye:
         details = []
         if manquants:
             details.append(f"incomplet, manquants: {', '.join(manquants)}")
@@ -449,6 +476,9 @@ def main():
             details.append(f"position actuelle introuvable : {echec_position}")
         entete = f"Envoyé ({' ; '.join(details)})" if details else "Envoyé"
         ligne = f"[{horodatage}] {entete} : {derniere_reponse}"
+    elif secours_deja_envoye and echec_envoi is None:
+        ligne = (f"[{horodatage}] Position fraîche toujours introuvable (la dernière position connue a déjà été "
+                 f"envoyée, non renvoyée)" + (f" ; {rattrapees} position(s) en attente renvoyée(s)" if rattrapees else ""))
     else:
         problemes = []
         if echec_position:
@@ -460,7 +490,9 @@ def main():
         ligne = f"[{horodatage}] Erreur : " + " ; ".join(problemes)
 
     # 5. Nouvel essai dans 15 min si quelque chose a échoué ; annulé dès que tout est passé.
-    suite = gerer_nouvel_essai(echec_position is not None or echec_envoi is not None)
+    vrai_probleme = echec_position is not None or echec_envoi is not None
+    suite = gerer_nouvel_essai(vrai_probleme or secours,
+                               MAX_RETRY if vrai_probleme else MAX_RETRY_SECOURS)
     if suite:
         ligne += f" | {suite}"
     ecrire_log(ligne + "\n")
