@@ -37,21 +37,21 @@ import requests
 URL_SERVEUR = "http://10.221.90.1:5000/position"  # IP WireGuard du Pi5
 RACINE = os.path.expanduser("~")  # /data/data/com.termux/files/home sous Termux
 FICHIER_LOG = os.path.join(RACINE, "geoloc.log")
-FICHIER_ATTENTE = os.path.join(RACINE, "geoloc_attente.json")   # positions non envoyées, une par ligne (JSON)
-FICHIER_COMPTEUR = os.path.join(RACINE, "geoloc_retry.count")   # échecs consécutifs depuis le dernier succès
-FICHIER_VERROU = os.path.join(RACINE, "geoloc.lock")            # évite deux envois simultanés
-FICHIER_ECHEC = os.path.join(RACINE, "geoloc_dernier_echec")    # heure (epoch, secondes) du dernier échec
+FICHIER_ATTENTE = os.path.join(RACINE, "geoloc_attente.json")    # positions non envoyées, une par ligne (JSON)
+FICHIER_COMPTEUR = os.path.join(RACINE, "geoloc_retry.count")    # échecs consécutifs depuis le dernier succès
+FICHIER_VERROU = os.path.join(RACINE, "geoloc.lock")             # évite deux envois simultanés
+FICHIER_ECHEC = os.path.join(RACINE, "geoloc_dernier_echec")     # heure (epoch, secondes) du dernier échec
 FICHIER_SECOURS = os.path.join(RACINE, "geoloc_secours_envoye")  # présent : une position ancienne a déjà été envoyée pour cet épisode
 SCRIPT = os.path.join(RACINE, "envoyer_position.py")
 FORMAT_HORODATAGE = "%Y-%m-%d %H:%M:%S"
 
-NB_ESSAIS_ENVOI = 3         # tentatives d'envoi pour la première position de la liste
-PAUSE_ENTRE_ESSAIS = 15     # secondes entre deux tentatives d'envoi
-MAX_ATTENTE = 100           # positions gardées au maximum en attente (les plus anciennes sont abandonnées)
-ID_JOB_RETRY = 1002         # job termux-job-scheduler de nouvel essai (1001 = créneau régulier de 8 h)
-DELAI_RETRY_MS = 15 * 60 * 1000   # 15 min : minimum accepté par Android pour un job périodique
-MAX_RETRY = 8               # 8 essais espacés d'environ 15 min (2 h ou plus), puis on attend le créneau suivant
-MAX_RETRY_SECOURS = 3       # si seule la dernière position connue est disponible : 3 nouveaux essais d'une vraie position
+NB_ESSAIS_ENVOI = 3                 # tentatives d'envoi pour la première position de la liste
+PAUSE_ENTRE_ESSAIS = 15             # secondes entre deux tentatives d'envoi
+MAX_ATTENTE = 100                   # positions gardées au maximum en attente (les plus anciennes sont abandonnées)
+ID_JOB_RETRY = 1002                 # job termux-job-scheduler de nouvel essai (1001 = créneau régulier de 8 h)
+DELAI_RETRY_MS = 15 * 60 * 1000     # 15 min : minimum accepté par Android pour un job périodique
+MAX_RETRY = 8                       # 8 essais espacés d'environ 15 min (2 h ou plus), puis on attend le créneau suivant
+MAX_RETRY_SECOURS = 3               # si seule la dernière position connue est disponible : 3 nouveaux essais d'une vraie position
 DELAI_MINI_NOUVEL_ESSAI = 10 * 60   # secondes : un déclenchement plus proche de l'échec précédent est ignoré
 
 # Position de secours : dernière position connue du système (réponse quasi immédiate, peut être ancienne).
@@ -208,6 +208,18 @@ def obtenir_wifi():
         "wifi_rssi": data.get("rssi"),
     }
 
+def nom_wifi_pour_log():
+    """Réseau Wi-Fi du moment, pour le log d'un échec d'envoi (ex. réseau invité de la Livebox qui isole le S23
+    du Pi5). Ne sert qu'au diagnostic : toute erreur donne 'inconnu'."""
+    try:
+        data = executer_termux(["termux-wifi-connectioninfo"])
+    except Exception:
+        return "inconnu"
+    if not data:
+        return "inconnu"
+    ssid = str(data.get("ssid") or "").strip('"')
+    return ssid if ssid and ssid != "<unknown ssid>" else "aucun (données mobiles)"
+
 def obtenir_reseau_mobile():
     data = executer_termux(["termux-telephony-deviceinfo"])
     if not data:
@@ -241,8 +253,8 @@ def collecter_toutes_les_donnees():
         if resultat:
             donnees.update(resultat)
         elif nom != "wifi":
-            # "wifi" est normalement vide dès qu'on est en 4G/5G : ce n'est pas
-            # un échec, donc on ne le compte pas comme un capteur manquant.
+            # "wifi" est normalement vide dès qu'on est en 4G/5G : ce n'est pas un échec,
+            # donc on ne le compte pas comme un capteur manquant.
             manquants.append(nom)
 
     return donnees, manquants, note_position
@@ -487,6 +499,7 @@ def main():
             if rattrapees:
                 problemes.append(f"{rattrapees} position(s) en attente renvoyée(s) avant l'échec")
             problemes.append(f"envoi impossible : {echec_envoi} — {len(restants)} position(s) en attente")
+            problemes.append(f"Wi-Fi : {nom_wifi_pour_log()}")
         ligne = f"[{horodatage}] Erreur : " + " ; ".join(problemes)
 
     # 5. Nouvel essai dans 15 min si quelque chose a échoué ; annulé dès que tout est passé.
