@@ -48,6 +48,35 @@ try:
 except ImportError:
     raise SystemExit("Il manque tkintermapview : pip install tkintermapview --break-system-packages")
 
+# Identification du Tracker auprès des serveurs OpenStreetMap (fonds de carte et recherche d'adresse).
+# La politique d'utilisation d'OpenStreetMap exige un User-Agent propre à l'application : les serveurs de tuiles
+# bloquent (erreur 403 « Access blocked ») celui que tkintermapview envoie par défaut, commun à toutes les applications
+# qui utilisent cette bibliothèque.
+USER_AGENT_HTTP = "TrackerS23/1.0 (usage personnel)"
+URL_TUILES = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+
+def _identifier_requetes_cartes():
+    """Remplace le User-Agent générique de tkintermapview par USER_AGENT_HTTP pour le chargement des tuiles.
+    Seul le module de la bibliothèque est concerné : le module requests des autres parties du programme n'est pas modifié."""
+    import requests
+    module_carte = getattr(tkintermapview, "map_widget", None)
+    if module_carte is None or not hasattr(module_carte, "requests"):
+        return
+
+    class _RequetesIdentifiees:
+        def __getattr__(self, nom):
+            return getattr(requests, nom)
+
+        @staticmethod
+        def get(url, **kwargs):
+            en_tetes = dict(kwargs.pop("headers", None) or {})
+            en_tetes["User-Agent"] = USER_AGENT_HTTP
+            return requests.get(url, headers=en_tetes, **kwargs)
+
+    module_carte.requests = _RequetesIdentifiees()
+
+_identifier_requetes_cartes()
+
 DOSSIER_PROJET = os.path.dirname(os.path.abspath(__file__))
 FICHIER_POSITIONS = os.path.join(DOSSIER_PROJET, "positions.log")
 FICHIER_TELEMETRIE = os.path.join(DOSSIER_PROJET, "telemetrie.log")
@@ -454,7 +483,7 @@ def adresse_depuis_osm(lat, lon):
     url = "https://nominatim.openstreetmap.org/reverse?" + urllib.parse.urlencode(
         {"format": "jsonv2", "lat": f"{lat:.6f}", "lon": f"{lon:.6f}", "zoom": 18, "accept-language": "fr"}
     )
-    requete = urllib.request.Request(url, headers={"User-Agent": "TrackerS23/1.0 (usage personnel)"})
+    requete = urllib.request.Request(url, headers={"User-Agent": USER_AGENT_HTTP})
     with urllib.request.urlopen(requete, timeout=10) as reponse:
         donnees = json.load(reponse)
     return donnees.get("display_name", "Adresse introuvable")
@@ -738,7 +767,7 @@ class TrackerS23(tk.Tk):
             zone_principale, width=700, height=600, corner_radius=0
         )
         self.widget_carte.pack(side="left", fill="both", expand=True)
-        self.widget_carte.set_tile_server("https://a.tile.openstreetmap.org/{z}/{x}/{y}.png")
+        self.widget_carte.set_tile_server(URL_TUILES)
 
         cadre_liste = ttk.Frame(zone_principale, width=380)
         cadre_liste.pack(side="right", fill="y")
@@ -1192,7 +1221,7 @@ class TrackerS23(tk.Tk):
 
         self.carte_lieux = tkintermapview.TkinterMapView(zone_principale, width=700, height=560, corner_radius=0)
         self.carte_lieux.pack(side="left", fill="both", expand=True)
-        self.carte_lieux.set_tile_server("https://a.tile.openstreetmap.org/{z}/{x}/{y}.png")
+        self.carte_lieux.set_tile_server(URL_TUILES)
         self.carte_lieux.add_left_click_map_command(self.clic_carte_lieux)
         self.bind("<Escape>", lambda evenement: self.annuler_deplacement())
 
